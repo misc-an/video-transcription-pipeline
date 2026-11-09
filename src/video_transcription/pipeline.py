@@ -349,13 +349,13 @@ def run_pipeline(
 
     # Stage 5: Exporting outputs
     print("\n[5/5] Exporting formatted transcript files...")
-    with tqdm(total=4, desc="Writing outputs", unit="file") as pbar:
+    with tqdm(total=5, desc="Writing outputs", unit="file") as pbar:
         saved_files = save_transcription_outputs(
             result=pipeline_result,
             output_stem=output_stem,
             include_speakers=speaker_labeled,
         )
-        pbar.update(4)
+        pbar.update(5)
 
     # Optional Audio Cleanup
     if cleanup_audio and extracted_wav.exists():
@@ -370,6 +370,7 @@ def run_pipeline(
     print(f"TXT Transcript:  {saved_files['txt']}")
     print(f"SRT Subtitles:   {saved_files['srt']}")
     print(f"VTT Subtitles:   {saved_files['vtt']}")
+    print(f"TSV InqScribe:   {saved_files['tsv']}")
     print(f"JSON Structure:  {saved_files['json']}")
     print("======================================================================\n")
     return saved_files

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from video_transcription.export import (
+    format_timestamp_inqscribe,
     format_timestamp_srt,
     format_timestamp_vtt,
     save_transcription_outputs,
@@ -30,6 +31,14 @@ def test_format_timestamp_vtt():
     assert format_timestamp_vtt(12.345) == "00:00:12.345"
     assert format_timestamp_vtt(1.9999) == "00:00:02.000"
     assert format_timestamp_vtt(59.9996) == "00:01:00.000"
+
+
+def test_format_timestamp_inqscribe():
+    assert format_timestamp_inqscribe(0.0) == "00:00:00.00"
+    assert format_timestamp_inqscribe(12.345) == "00:00:12.35"
+    assert format_timestamp_inqscribe(1.9999) == "00:00:02.00"
+    assert format_timestamp_inqscribe(59.996) == "00:01:00.00"
+    assert format_timestamp_inqscribe(3599.996) == "01:00:00.00"
 
 
 def test_smart_join_tokens():
@@ -100,11 +109,13 @@ def test_save_transcription_outputs(tmp_path: Path):
     assert outputs["txt"].name == "interview.2026.10.file.txt"
     assert outputs["srt"].name == "interview.2026.10.file.srt"
     assert outputs["vtt"].name == "interview.2026.10.file.vtt"
+    assert outputs["tsv"].name == "interview.2026.10.file.tsv"
     assert outputs["json"].name == "interview.2026.10.file.json"
 
     assert outputs["txt"].exists()
     assert outputs["srt"].exists()
     assert outputs["vtt"].exists()
+    assert outputs["tsv"].exists()
     assert outputs["json"].exists()
 
     # Verify content
@@ -116,5 +127,13 @@ def test_save_transcription_outputs(tmp_path: Path):
     assert "00:00:00,000 --> 00:00:01,500" in srt_content
     assert "[SPEAKER_00] Hello world." in srt_content
 
+    tsv_content = outputs["tsv"].read_text(encoding="utf-8")
+    assert tsv_content == "00:00:00.00\t00:00:01.50\tSPEAKER_00\tHello world.\n"
+
     json_content = json.loads(outputs["json"].read_text(encoding="utf-8"))
     assert json_content["language"] == "English"
+
+    # Test without speakers (3-column TSV)
+    outputs_no_spk = save_transcription_outputs(result, tmp_path / "no_spk", include_speakers=False)
+    tsv_no_spk_content = outputs_no_spk["tsv"].read_text(encoding="utf-8")
+    assert tsv_no_spk_content == "00:00:00.00\t00:00:01.50\tHello world.\n"

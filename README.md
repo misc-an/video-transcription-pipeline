@@ -24,7 +24,7 @@ speech-to-text_interview/
 │       ├── __init__.py                # Package exports
 │       ├── pipeline.py                # Core transcription & diarization orchestrator
 │       ├── audio.py                   # Universal FFmpeg media extraction
-│       ├── export.py                  # Formatters: TXT, SRT, VTT, JSON
+│       ├── export.py                  # Formatters: TXT, SRT, VTT, TSV (InqScribe), JSON
 │       └── weights.py                 # Weight pre-caching utilities
 │
 ├── tests/                             # Automated test suite
@@ -176,6 +176,7 @@ For an input file named `lecture.webm`, the following files are produced:
 | `lecture.txt` | Clean plain-text transcript with timestamps and speaker labels. |
 | `lecture.srt` | Standard SubRip subtitle file for video players (VLC, YouTube, etc.). |
 | `lecture.vtt` | WebVTT caption file formatted with speaker voice tags (`<v SPEAKER_00>`). |
+| `lecture.tsv` | InqScribe-ready Tab-Delimited transcript (open via `File > Import > Tab-delimited Text...`). |
 | `lecture.json` | Complete structured JSON containing word-level timestamps, confidence scores, and speaker IDs. |
 | `lecture.extracted.wav` | Extracted 16kHz mono audio (pass `--cleanup-audio` to remove). |
 
