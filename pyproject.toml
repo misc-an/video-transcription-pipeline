@@ -1,7 +1,7 @@
 [project]
 name = "video-transcription-pipeline"
-version = "0.2.0"
-description = "Universal video-to-audio-to-text transcription pipeline using FFmpeg, Qwen3-ASR 1.7B, and PyAnnote Speaker Diarization"
+version = "0.3.0"
+description = "Turn recorded interviews, lectures, and focus groups into timestamped text transcripts with speaker labels. Uses FFmpeg, Qwen3-ASR, and PyAnnote."
 readme = "README.md"
 requires-python = ">=3.11, <3.13"
 dependencies = [
@@ -14,9 +14,12 @@ dependencies = [
     "torchaudio>=2.2.0",
     "huggingface-hub>=0.20.0",
     "tqdm>=4.66.0",
+    "rich>=13.0.0",
     "ffmpeg-python>=0.2.0",
-    "pytest>=8.0.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -24,6 +27,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/video_transcription"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [project.scripts]
 transcribe = "video_transcription.pipeline:main"

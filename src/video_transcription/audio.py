@@ -26,6 +26,7 @@ def extract_audio_ffmpeg(
     output_wav_path: Path,
     start_time: Optional[str] = None,
     duration: Optional[float] = None,
+    show_progress: bool = False,
 ) -> Path:
     """
     Universal media to 16kHz mono 16-bit PCM WAV extraction using FFmpeg.
@@ -53,18 +54,27 @@ def extract_audio_ffmpeg(
         str(output_wav_path),
     ])
 
-    with tqdm(total=100, desc="[1/5] Extracting audio (FFmpeg)", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}%") as pbar:
+    if show_progress:
+        with tqdm(total=100, desc="Extracting audio (FFmpeg)", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}%") as pbar:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            pbar.update(30)
+            _, stderr_data = process.communicate()
+            pbar.update(70)
+    else:
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-        pbar.update(30)
         _, stderr_data = process.communicate()
-        pbar.update(70)
 
-        if process.returncode != 0:
-            raise RuntimeError(f"FFmpeg audio extraction failed (code {process.returncode}):\n{stderr_data}")
+    if process.returncode != 0:
+        raise RuntimeError(f"FFmpeg audio extraction failed (code {process.returncode}):\n{stderr_data}")
 
     return output_wav_path

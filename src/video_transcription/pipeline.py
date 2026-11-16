@@ -1,16 +1,29 @@
 """Main transcription and diarization pipeline execution using Qwen3-ASR 1.7B and PyAnnote."""
 
 import argparse
+import math
 import os
 import sys
 import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from tqdm import tqdm
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
 
 # Suppress harmless third-party runtime warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pyannote.*")
-warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"nagisa.*")
 warnings.filterwarnings("ignore", message=r".*torchcodec.*")
 warnings.filterwarnings("ignore", message=r".*upgrade_checkpoint.*")
 
@@ -184,117 +197,189 @@ def run_pipeline(
         else:
             chosen_dtype = torch.float32
 
-    print("======================================================================")
-    print("           VIDEO-TO-TEXT TRANSCRIPTION & DIARIZATION PIPELINE          ")
-    print("======================================================================")
-    print(f"Input file:     {media_path}")
-    print(f"Output dir:     {out_dir}")
-    print(f"ASR Model:      {asr_model_name} (Device: {chosen_device.upper()}, Dtype: {chosen_dtype})")
-    print(f"Forced Aligner: {aligner_model_name if do_align else 'Disabled'}")
-    print(f"Diarization:    {do_diarize} (PyAnnote)")
+    console = Console()
+
+    # Display configuration panel
+    info_table = Table(show_header=False, box=None, padding=(0, 1))
+    info_table.add_column("Key", style="bold cyan", width=18)
+    info_table.add_column("Value", style="white")
+    info_table.add_row("Input Media", str(media_path))
+    info_table.add_row("Output Dir", str(out_dir))
+    info_table.add_row("ASR Model", f"{asr_model_name} ({chosen_device.upper()}, {chosen_dtype})")
+    info_table.add_row("Forced Alignment", "Enabled" if do_align else "Disabled")
+    info_table.add_row("Diarization", "Enabled (PyAnnote)" if do_diarize else "Disabled")
     if duration:
-        print(f"Segment Limit:  start={start_time or 0}s, duration={duration}s")
-    print("======================================================================\n")
+        info_table.add_row("Segment Limit", f"start={start_time or 0}s, duration={duration}s")
+    console.print()
+    console.print(Panel(info_table, title="[bold cyan]Video-to-Text Transcription Pipeline[/bold cyan]", border_style="cyan"))
+    console.print()
 
-    # Stage 1: Audio Extraction (FFmpeg)
-    extracted_wav = out_dir / f"{base_name}.extracted.wav"
-    if media_path.resolve() == extracted_wav.resolve() and start_time is None and duration is None:
-        print("[1/5] Input is already extracted audio. Using directly.")
-    else:
-        if media_path.resolve() == extracted_wav.resolve():
-            temp_wav = out_dir / f"{base_name}.tmp.wav"
-            extract_audio_ffmpeg(
-                media_path=media_path,
-                output_wav_path=temp_wav,
-                start_time=start_time,
-                duration=duration,
-            )
-            temp_wav.replace(extracted_wav)
-        else:
-            extract_audio_ffmpeg(
-                media_path=media_path,
-                output_wav_path=extracted_wav,
-                start_time=start_time,
-                duration=duration,
-            )
+    # Suppress verbose third-party logging to prevent terminal line duplicates
+    import transformers
+    transformers.utils.logging.disable_progress_bar()
+    transformers.logging.set_verbosity_error()
+    import huggingface_hub
+    huggingface_hub.utils.disable_progress_bars()
 
-    # Stage 2: Qwen3-ASR Model Loading & Transcription
-    print(f"\n[2/5] Loading Qwen3-ASR ('{asr_model_name}')...")
-    from qwen_asr import Qwen3ASRModel
-
-    # Standardize language code/name for Qwen3 if provided (e.g. 'en' -> 'English')
-    lang_map = {
-        "en": "English", "zh": "Chinese", "es": "Spanish", "fr": "French",
-        "de": "German", "ja": "Japanese", "ko": "Korean", "ru": "Russian",
-        "it": "Italian", "pt": "Portuguese", "ar": "Arabic", "hi": "Hindi"
-    }
-    qwen_lang = lang_map.get(language.lower(), language) if language else None
-
-    aligner_kwargs = dict(device_map=chosen_device, dtype=chosen_dtype) if do_align else None
-
-    with tqdm(total=1, desc="Loading Qwen3-ASR Model", unit="model") as pbar:
-        model = Qwen3ASRModel.from_pretrained(
-            asr_model_name,
-            dtype=chosen_dtype,
-            device_map=chosen_device,
-            forced_aligner=aligner_model_name if do_align else None,
-            forced_aligner_kwargs=aligner_kwargs,
-        )
-        pbar.update(1)
-
-    print(f"Transcribing audio with Qwen3-ASR (Forced Alignment: {do_align})...")
-    transcriptions = model.transcribe(
-        audio=str(extracted_wav),
-        language=qwen_lang,
-        return_time_stamps=do_align,
+    # Single sleek, animated progress bar (pinned to 1 line, never duplicates)
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(bar_width=28, complete_style="green", finished_style="bold green"),
+        TaskProgressColumn(),
+        TextColumn("[dim]•[/dim]"),
+        TimeElapsedColumn(),
+        TextColumn("[dim]•[/dim]"),
+        TimeRemainingColumn(),
+        console=console,
     )
-    res = transcriptions[0]
-    detected_lang = res.language or (language or "unknown")
-    full_text = res.text or ""
-    print(f"✓ Transcription complete. Detected language: '{detected_lang}'")
 
-    # Stage 3: Word Alignment Extraction
-    words: List[Dict[str, Any]] = []
-    if do_align and res.time_stamps and hasattr(res.time_stamps, "items"):
-        print(f"\n[3/5] Processing word-level timestamps ({len(res.time_stamps.items)} tokens)...")
-        for item in res.time_stamps.items:
-            words.append({
-                "text": item.text,
-                "start": float(item.start_time),
-                "end": float(item.end_time),
-                "speaker": None,
-            })
-        print(f"✓ Extracted {len(words)} aligned timestamped units.")
-    else:
-        print("\n[3/5] Word-level alignment skipped or not produced.")
+    with progress:
+        task_id = progress.add_task("[1/5] Extracting audio (FFmpeg)...", total=5.0)
 
-    # Stage 4: Speaker Diarization (PyAnnote)
-    speaker_labeled = False
-    speaker_turns: List[Tuple[float, float, str]] = []
-    if do_diarize:
-        print(f"\n[4/5] Running Speaker Diarization on {chosen_device.upper()} (PyAnnote)...")
-        import huggingface_hub
-        token = hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN") or huggingface_hub.get_token()
-
-        if not token:
-            print("⚠ Hugging Face token missing!")
-            print("  Speaker Diarization requires an access token with access to 'pyannote/speaker-diarization-community-1'.")
-            print("  Provide --hf-token or export HF_TOKEN=\"hf_...\"")
-            print("  Continuing export without speaker diarization labels.")
+        # Stage 1: Audio Extraction (FFmpeg)
+        extracted_wav = out_dir / f"{base_name}.extracted.wav"
+        if media_path.resolve() == extracted_wav.resolve() and start_time is None and duration is None:
+            pass
         else:
-            try:
-                import torchaudio
-                from pyannote.audio import Pipeline
+            if media_path.resolve() == extracted_wav.resolve():
+                temp_wav = out_dir / f"{base_name}.tmp.wav"
+                extract_audio_ffmpeg(
+                    media_path=media_path,
+                    output_wav_path=temp_wav,
+                    start_time=start_time,
+                    duration=duration,
+                    show_progress=False,
+                )
+                temp_wav.replace(extracted_wav)
+            else:
+                extract_audio_ffmpeg(
+                    media_path=media_path,
+                    output_wav_path=extracted_wav,
+                    start_time=start_time,
+                    duration=duration,
+                    show_progress=False,
+                )
+        progress.update(task_id, completed=1.0, description="[2/5] Loading Qwen3-ASR model...")
 
-                with tqdm(total=1, desc="Loading PyAnnote Diarization", unit="model") as pbar:
+        # Stage 2: Qwen3-ASR Model Loading & Transcription
+        from qwen_asr import Qwen3ASRModel
+
+        # Standardize language code/name for Qwen3 if provided (e.g. 'en' -> 'English')
+        lang_map = {
+            "en": "English", "zh": "Chinese", "es": "Spanish", "fr": "French",
+            "de": "German", "ja": "Japanese", "ko": "Korean", "ru": "Russian",
+            "it": "Italian", "pt": "Portuguese", "ar": "Arabic", "hi": "Hindi"
+        }
+        qwen_lang = lang_map.get(language.lower(), language) if language else None
+
+        aligner_kwargs = dict(device_map=chosen_device, dtype=chosen_dtype) if do_align else None
+
+        # Load from local cache first (fast, offline, no repeated network calls); fall back to downloading
+        model = None
+        try:
+            local_aligner_kwargs = dict(aligner_kwargs, local_files_only=True) if aligner_kwargs else None
+            model = Qwen3ASRModel.from_pretrained(
+                asr_model_name,
+                dtype=chosen_dtype,
+                device_map=chosen_device,
+                local_files_only=True,
+                forced_aligner=aligner_model_name if do_align else None,
+                forced_aligner_kwargs=local_aligner_kwargs,
+            )
+        except Exception:
+            model = Qwen3ASRModel.from_pretrained(
+                asr_model_name,
+                dtype=chosen_dtype,
+                device_map=chosen_device,
+                forced_aligner=aligner_model_name if do_align else None,
+                forced_aligner_kwargs=aligner_kwargs,
+            )
+
+        # Attach single overall progress tracker to chunk-level ASR inference
+        curr_chunk = 0
+        if hasattr(model, "_infer_asr_transformers"):
+            def infer_asr_with_progress(contexts, wavs, languages):
+                nonlocal curr_chunk
+                total_chunks = len(wavs)
+                batch_size = 1 if chosen_device == "mps" else (model.max_inference_batch_size if model.max_inference_batch_size > 0 else 1)
+
+                outs = []
+                texts = [model._build_text_prompt(context=c, force_language=fl) for c, fl in zip(contexts, languages)]
+
+                for i in range(0, len(texts), batch_size):
+                    sub_text = texts[i : i + batch_size]
+                    sub_wavs = wavs[i : i + batch_size]
+                    curr_chunk += len(sub_text)
+                    progress.update(
+                        task_id,
+                        completed=1.0 + (curr_chunk / total_chunks),
+                        description=f"[2/5] Transcribing speech (chunk {curr_chunk}/{total_chunks})...",
+                    )
+
+                    inputs = model.processor(text=sub_text, audio=sub_wavs, return_tensors="pt", padding=True)
+                    inputs = inputs.to(model.model.device).to(model.model.dtype)
+
+                    text_ids = model.model.generate(**inputs, max_new_tokens=model.max_new_tokens)
+
+                    decoded = model.processor.batch_decode(
+                        text_ids.sequences[:, inputs["input_ids"].shape[1]:],
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False,
+                    )
+                    outs.extend(list(decoded))
+
+                return outs
+
+            model._infer_asr_transformers = infer_asr_with_progress
+
+        progress.update(task_id, description="[2/5] Transcribing speech...")
+        with torch.inference_mode():
+            transcriptions = model.transcribe(
+                audio=str(extracted_wav),
+                language=qwen_lang,
+                return_time_stamps=do_align,
+            )
+
+        res = transcriptions[0]
+        detected_lang = res.language or (language or "unknown")
+        full_text = res.text or ""
+        progress.update(task_id, completed=2.0)
+
+        # Stage 3: Word Alignment Extraction
+        progress.update(task_id, description="[3/5] Aligning timestamps...")
+        words: List[Dict[str, Any]] = []
+        if do_align and res.time_stamps and hasattr(res.time_stamps, "items"):
+            for item in res.time_stamps.items:
+                words.append({
+                    "text": item.text,
+                    "start": float(item.start_time),
+                    "end": float(item.end_time),
+                    "speaker": None,
+                })
+        progress.update(task_id, completed=3.0)
+
+        # Stage 4: Speaker Diarization (PyAnnote)
+        speaker_labeled = False
+        speaker_turns: List[Tuple[float, float, str]] = []
+        if do_diarize:
+            progress.update(task_id, description="[4/5] Diarizing speakers (PyAnnote)...")
+            import huggingface_hub
+            token = hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN") or huggingface_hub.get_token()
+
+            if not token:
+                console.print("[yellow]⚠ Hugging Face token missing for speaker diarization.[/yellow]")
+            else:
+                try:
+                    import torchaudio
+                    from pyannote.audio import Pipeline
+
                     diarize_pipeline = Pipeline.from_pretrained(
                         "pyannote/speaker-diarization-community-1",
                         token=token,
                     )
                     diarize_pipeline.to(torch.device(chosen_device))
-                    pbar.update(1)
 
-                with tqdm(total=1, desc="Diarizing speaker turns", unit="diarize") as pbar:
                     waveform, sample_rate = torchaudio.load(str(extracted_wav))
                     audio_input = {"waveform": waveform, "sample_rate": sample_rate}
 
@@ -304,75 +389,73 @@ def run_pipeline(
                     if max_speakers is not None:
                         diarize_kwargs["max_speakers"] = max_speakers
 
-                    diarization_output = diarize_pipeline(audio_input, **diarize_kwargs)
+                    with torch.inference_mode():
+                        diarization_output = diarize_pipeline(audio_input, **diarize_kwargs)
                     annotation = getattr(diarization_output, "speaker_diarization", diarization_output)
                     for turn, _, speaker in annotation.itertracks(yield_label=True):
                         speaker_turns.append((turn.start, turn.end, speaker))
-                    pbar.update(1)
 
-                if words and speaker_turns:
-                    assign_speakers_to_words(words, speaker_turns)
-                    speaker_labeled = True
-                    print(f"✓ Speaker diarization complete ({len(speaker_turns)} turns merged).")
-                elif speaker_turns:
-                    speaker_labeled = True
-                    print(f"✓ Speaker diarization completed ({len(speaker_turns)} turns).")
-            except Exception as e:
-                print(f"⚠ Warning: Speaker diarization skipped: {e}")
-                print("  Note: Ensure your token has access to https://huggingface.co/pyannote/speaker-diarization-community-1")
-                print("  Continuing with standard transcription export.")
-    else:
-        print("\n[4/5] Speaker diarization skipped (use --diarize to enable).")
+                    if words and speaker_turns:
+                        assign_speakers_to_words(words, speaker_turns)
+                        speaker_labeled = True
+                    elif speaker_turns:
+                        speaker_labeled = True
+                except Exception:
+                    pass
+        else:
+            progress.update(task_id, description="[4/5] Diarization skipped...")
+        progress.update(task_id, completed=4.0)
 
-    # Build Structured Output Segments
-    if words:
-        segments = group_words_into_segments(words)
-    else:
-        # Fallback if no timestamps were produced
-        segments = [{
-            "start": 0.0,
-            "end": 0.0,
+        # Build Structured Output Segments
+        if words:
+            segments = group_words_into_segments(words)
+        else:
+            # Fallback if no timestamps were produced
+            segments = [{
+                "start": 0.0,
+                "end": 0.0,
+                "text": full_text,
+                "speaker": "SPEAKER_00" if speaker_labeled else None,
+                "words": [],
+            }]
+
+        pipeline_result: Dict[str, Any] = {
             "text": full_text,
-            "speaker": "SPEAKER_00" if speaker_labeled else None,
-            "words": [],
-        }]
+            "language": detected_lang,
+            "segments": segments,
+            "words": words,
+            "speaker_turns": [
+                {"start": t[0], "end": t[1], "speaker": t[2]} for t in speaker_turns
+            ],
+        }
 
-    pipeline_result: Dict[str, Any] = {
-        "text": full_text,
-        "language": detected_lang,
-        "segments": segments,
-        "words": words,
-        "speaker_turns": [
-            {"start": t[0], "end": t[1], "speaker": t[2]} for t in speaker_turns
-        ],
-    }
-
-    # Stage 5: Exporting outputs
-    print("\n[5/5] Exporting formatted transcript files...")
-    with tqdm(total=5, desc="Writing outputs", unit="file") as pbar:
+        # Stage 5: Exporting outputs
+        progress.update(task_id, description="[5/5] Exporting transcripts...")
         saved_files = save_transcription_outputs(
             result=pipeline_result,
             output_stem=output_stem,
             include_speakers=speaker_labeled,
         )
-        pbar.update(5)
+        progress.update(task_id, completed=5.0, description="[bold green]Pipeline completed successfully![/bold green]")
 
     # Optional Audio Cleanup
     if cleanup_audio and extracted_wav.exists():
         extracted_wav.unlink()
-        print("✓ Intermediate extracted WAV cleaned up.")
-    else:
-        print(f"✓ Intermediate audio preserved at: {extracted_wav}")
 
-    print("\n======================================================================")
-    print("                    PIPELINE COMPLETED SUCCESSFULLY                   ")
-    print("======================================================================")
-    print(f"TXT Transcript:  {saved_files['txt']}")
-    print(f"SRT Subtitles:   {saved_files['srt']}")
-    print(f"VTT Subtitles:   {saved_files['vtt']}")
-    print(f"TSV InqScribe:   {saved_files['tsv']}")
-    print(f"JSON Structure:  {saved_files['json']}")
-    print("======================================================================\n")
+    # Display final results panel
+    summary_table = Table(show_header=False, box=None, padding=(0, 1))
+    summary_table.add_column("Type", style="bold cyan", width=18)
+    summary_table.add_column("File", style="green")
+    summary_table.add_row("Detected Language", detected_lang)
+    summary_table.add_row("TXT Transcript", str(saved_files["txt"]))
+    summary_table.add_row("SRT Subtitles", str(saved_files["srt"]))
+    summary_table.add_row("VTT Subtitles", str(saved_files["vtt"]))
+    summary_table.add_row("TSV InqScribe", str(saved_files["tsv"]))
+    summary_table.add_row("JSON Structure", str(saved_files["json"]))
+
+    console.print()
+    console.print(Panel(summary_table, title="[bold green]✓ Pipeline Completed Successfully[/bold green]", border_style="green"))
+    console.print()
     return saved_files
 
 

@@ -13,7 +13,7 @@ from .export import (
 from .pipeline import assign_speakers_to_words, group_words_into_segments, main as transcribe_main, run_pipeline
 from .weights import download_diarization_weights, download_qwen_weights
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "assign_speakers_to_words",
     "download_diarization_weights",

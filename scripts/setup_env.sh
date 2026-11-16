@@ -6,48 +6,53 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
-echo "=== Setting up Video-to-Text Pipeline Environment ==="
+echo "=== Setting up Video-to-Text Transcription Pipeline ==="
 echo "Project root: $ROOT_DIR"
 
 # Check if uv is installed
 if ! command -v uv &> /dev/null; then
-    echo "Error: uv is not installed or not in PATH."
-    echo "Install uv via: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo "Error: uv is not installed."
+    echo "Install it with: curl -LsSf https://astral.sh/uv/install.sh | sh"
     exit 1
 fi
 
 # Check if ffmpeg is installed
 if ! command -v ffmpeg &> /dev/null; then
-    echo "Warning: ffmpeg not found in PATH."
+    echo "Warning: ffmpeg is not found in your system path."
     if [ -f "/opt/homebrew/bin/ffmpeg" ]; then
-        echo "Found ffmpeg in /opt/homebrew/bin/ffmpeg. Adding to PATH."
+        echo "Found ffmpeg at /opt/homebrew/bin/ffmpeg — adding to PATH."
         export PATH="/opt/homebrew/bin:$PATH"
     else
-        echo "Please install ffmpeg (e.g. brew install ffmpeg)."
+        echo "Please install ffmpeg before running transcriptions."
+        echo "  Mac:   brew install ffmpeg"
+        echo "  Linux: sudo apt install ffmpeg"
     fi
 else
     echo "Found ffmpeg at: $(command -v ffmpeg)"
 fi
 
-# Create virtual environment with Python 3.12 (optimal for PyTorch + Qwen3-ASR on macOS)
-echo "Creating virtual environment .venv with Python 3.12..."
-uv venv --python 3.12 .venv
+# 1. Create virtual environment and install all dependencies
+echo ""
+echo "[1/2] Installing dependencies and CLI tools..."
+uv sync --extra dev
 
-echo "Installing all dependencies into .venv using uv..."
-uv pip install -r requirements.txt
-uv pip install -e .
-
-# Link package directory directly to site-packages (bypasses macOS UF_HIDDEN .pth issue completely)
-SITE_PACKAGES=$(.venv/bin/python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || true)
-if [ -n "$SITE_PACKAGES" ] && [ -d "$SITE_PACKAGES" ]; then
-    ln -sfn "$ROOT_DIR/src/video_transcription" "$SITE_PACKAGES/video_transcription"
-fi
-
-# Ensure macOS does not set UF_HIDDEN on .venv .pth files (which Python 3.12 skips by default)
+# Ensure macOS does not hide .pth files (Python 3.12+ skips UF_HIDDEN files)
 if [[ "$OSTYPE" == "darwin"* ]]; then
     chflags -R nohidden .venv 2>/dev/null || true
 fi
 
-echo "=== Environment setup complete! ==="
-echo "To activate: source .venv/bin/activate"
-echo "Or run scripts directly with uv: uv run transcribe <video>"
+# 2. Download and cache model weights so they are permanently ready offline
+echo ""
+echo "[2/2] Checking and caching AI model weights (one-time setup)..."
+if [ -n "$HF_TOKEN" ]; then
+    uv run download-weights --hf-token "$HF_TOKEN"
+else
+    uv run download-weights
+fi
+
+echo ""
+echo "=== Setup complete! ==="
+echo "All model weights are cached locally. The pipeline will run without re-downloading."
+echo ""
+echo "To transcribe a recording:"
+echo "  uv run transcribe \"path/to/recording.mp4\""
