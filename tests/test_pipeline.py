@@ -107,16 +107,26 @@ def test_save_transcription_outputs(tmp_path: Path):
 
     # Check paths exist and preserve full stem
     assert outputs["txt"].name == "interview.2026.10.file.txt"
+    assert outputs["by_speaker"].name == "interview.2026.10.file.by_speaker.txt"
     assert outputs["srt"].name == "interview.2026.10.file.srt"
     assert outputs["vtt"].name == "interview.2026.10.file.vtt"
     assert outputs["tsv"].name == "interview.2026.10.file.tsv"
     assert outputs["json"].name == "interview.2026.10.file.json"
 
     assert outputs["txt"].exists()
+    assert outputs["by_speaker"].exists()
     assert outputs["srt"].exists()
     assert outputs["vtt"].exists()
     assert outputs["tsv"].exists()
     assert outputs["json"].exists()
+
+    # Verify content
+    txt_content = outputs["txt"].read_text(encoding="utf-8")
+    assert txt_content == "SPEAKER_00: Hello world.\n\n"
+
+    by_spk_content = outputs["by_speaker"].read_text(encoding="utf-8")
+    assert "=== SPEAKER_00 ===" in by_spk_content
+    assert "- Hello world." in by_spk_content
 
     # Verify content
     vtt_content = outputs["vtt"].read_text(encoding="utf-8")

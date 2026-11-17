@@ -163,6 +163,7 @@ def run_pipeline(
     start_time: Optional[str] = None,
     duration: Optional[float] = None,
     chunk_size: float = 30.0,
+    timestamps_in_txt: bool = False,
     cleanup_audio: bool = False,
 ):
     media_path = Path(media_file).expanduser().resolve()
@@ -484,6 +485,7 @@ def run_pipeline(
             result=pipeline_result,
             output_stem=output_stem,
             include_speakers=speaker_labeled,
+            timestamps_in_txt=timestamps_in_txt,
         )
         progress.update(task_id, completed=5.0, description="[bold green]Pipeline completed successfully![/bold green]")
 
@@ -497,6 +499,8 @@ def run_pipeline(
     summary_table.add_column("File", style="green")
     summary_table.add_row("Detected Language", detected_lang)
     summary_table.add_row("TXT Transcript", str(saved_files["txt"]))
+    if speaker_labeled and "by_speaker" in saved_files:
+        summary_table.add_row("TXT (By Speaker)", str(saved_files["by_speaker"]))
     summary_table.add_row("SRT Subtitles", str(saved_files["srt"]))
     summary_table.add_row("VTT Subtitles", str(saved_files["vtt"]))
     summary_table.add_row("TSV InqScribe", str(saved_files["tsv"]))
@@ -604,6 +608,11 @@ def main():
         help="Chunk duration in seconds for ASR and forced alignment (default: 30.0s).",
     )
     parser.add_argument(
+        "--timestamps-in-txt",
+        action="store_true",
+        help="Include [HH:MM:SS.mmm - HH:MM:SS.mmm] timestamps in the plain .txt export.",
+    )
+    parser.add_argument(
         "--cleanup-audio",
         action="store_true",
         help="Delete intermediate 16kHz WAV file after completion.",
@@ -635,6 +644,7 @@ def main():
         start_time=args.start_time,
         duration=args.duration,
         chunk_size=args.chunk_size,
+        timestamps_in_txt=args.timestamps_in_txt,
         cleanup_audio=args.cleanup_audio,
     )
 

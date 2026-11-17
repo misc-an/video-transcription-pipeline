@@ -45,30 +45,74 @@ def save_transcription_outputs(
     result: Dict[str, Any],
     output_stem: Path,
     include_speakers: bool = True,
+    timestamps_in_txt: bool = False,
 ) -> Dict[str, Path]:
     """Save transcripts in TXT, SRT, VTT, TSV (InqScribe), and JSON formats without truncating dotted filenames."""
     segments: List[Dict[str, Any]] = result.get("segments", [])
     parent_dir = output_stem.parent
     stem_name = output_stem.name
 
-    # 1. Plain Text (.txt) with timestamps and optional speaker markers
+    # 1. Plain Text (.txt) formatted with speakers and without timestamps (merging consecutive segments)
     txt_path = parent_dir / f"{stem_name}.txt"
     with open(txt_path, "w", encoding="utf-8") as f:
+        if timestamps_in_txt:
+            for seg in segments:
+                speaker = seg.get("speaker") if include_speakers else None
+                start_val = seg.get("start")
+                start_sec = 0.0 if start_val is None else float(start_val)
+                end_val = seg.get("end")
+                end_sec = start_sec if end_val is None else float(end_val)
+                start_fmt = format_timestamp_vtt(start_sec)
+                end_fmt = format_timestamp_vtt(end_sec)
+                text = seg.get("text", "").strip()
+                if speaker:
+                    f.write(f"[{start_fmt} - {end_fmt}] {speaker}: {text}\n\n")
+                else:
+                    f.write(f"[{start_fmt} - {end_fmt}] {text}\n\n")
+        else:
+            current_speaker = None
+            current_turn_texts: List[str] = []
+            for seg in segments:
+                speaker = seg.get("speaker") if include_speakers else None
+                text = seg.get("text", "").strip()
+                if not text:
+                    continue
+                if current_turn_texts and speaker != current_speaker:
+                    turn_text = " ".join(current_turn_texts)
+                    if current_speaker:
+                        f.write(f"{current_speaker}: {turn_text}\n\n")
+                    else:
+                        f.write(f"{turn_text}\n\n")
+                    current_turn_texts = [text]
+                    current_speaker = speaker
+                else:
+                    if not current_turn_texts:
+                        current_speaker = speaker
+                    current_turn_texts.append(text)
+
+            if current_turn_texts:
+                turn_text = " ".join(current_turn_texts)
+                if current_speaker:
+                    f.write(f"{current_speaker}: {turn_text}\n\n")
+                else:
+                    f.write(f"{turn_text}\n\n")
+
+    # 1b. Grouped / Sorted by Speaker (.by_speaker.txt)
+    by_speaker_path = parent_dir / f"{stem_name}.by_speaker.txt"
+    with open(by_speaker_path, "w", encoding="utf-8") as f:
+        speaker_turns: Dict[str, List[str]] = {}
         for seg in segments:
-            speaker = seg.get("speaker") if include_speakers else None
-            start_val = seg.get("start")
-            start_sec = 0.0 if start_val is None else float(start_val)
-            end_val = seg.get("end")
-            end_sec = start_sec if end_val is None else float(end_val)
+            spk = seg.get("speaker") if include_speakers else None
+            txt = seg.get("text", "").strip()
+            if txt:
+                spk_label = spk or "TRANSCRIPT"
+                speaker_turns.setdefault(spk_label, []).append(txt)
 
-            start_fmt = format_timestamp_vtt(start_sec)
-            end_fmt = format_timestamp_vtt(end_sec)
-            text = seg.get("text", "").strip()
-
-            if speaker:
-                f.write(f"[{start_fmt} - {end_fmt}] {speaker}: {text}\n\n")
-            else:
-                f.write(f"[{start_fmt} - {end_fmt}] {text}\n\n")
+        for spk in sorted(speaker_turns.keys()):
+            f.write(f"=== {spk} ===\n\n")
+            for t in speaker_turns[spk]:
+                f.write(f"- {t}\n")
+            f.write("\n")
 
     # 2. SubRip Subtitles (.srt)
     srt_path = parent_dir / f"{stem_name}.srt"
@@ -136,6 +180,7 @@ def save_transcription_outputs(
 
     return {
         "txt": txt_path,
+        "by_speaker": by_speaker_path,
         "srt": srt_path,
         "vtt": vtt_path,
         "tsv": tsv_path,
