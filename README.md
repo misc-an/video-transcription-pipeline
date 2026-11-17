@@ -183,6 +183,7 @@ Hardware acceleration is automatic: NVIDIA GPU (CUDA), Apple Silicon (Metal/MPS)
 | `--hf-token` | Hugging Face access token | `$HF_TOKEN` env var |
 | `--min-speakers` | Minimum expected speakers | Automatic |
 | `--max-speakers` | Maximum expected speakers | Automatic |
+| `--chunk-size` | Chunk duration for ASR & forced alignment | `30.0`s |
 | `--start-time` | Start offset (e.g. `00:05:00`) | `0` |
 | `--duration` | Process only N seconds | Full file |
 | `--cleanup-audio` | Delete intermediate WAV after export | Keep |

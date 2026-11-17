@@ -162,6 +162,7 @@ def run_pipeline(
     max_speakers: Optional[int] = None,
     start_time: Optional[str] = None,
     duration: Optional[float] = None,
+    chunk_size: float = 30.0,
     cleanup_audio: bool = False,
 ):
     media_path = Path(media_file).expanduser().resolve()
@@ -206,6 +207,7 @@ def run_pipeline(
     info_table.add_row("Input Media", str(media_path))
     info_table.add_row("Output Dir", str(out_dir))
     info_table.add_row("ASR Model", f"{asr_model_name} ({chosen_device.upper()}, {chosen_dtype})")
+    info_table.add_row("Chunk Size", f"{chunk_size}s")
     info_table.add_row("Forced Alignment", "Enabled" if do_align else "Disabled")
     info_table.add_row("Diarization", "Enabled (PyAnnote)" if do_diarize else "Disabled")
     if duration:
@@ -263,7 +265,16 @@ def run_pipeline(
         progress.update(task_id, completed=1.0, description="[2/5] Loading Qwen3-ASR model...")
 
         # Stage 2: Qwen3-ASR Model Loading & Transcription
+        import qwen_asr.inference.qwen3_asr as qwen_asr_mod
+        import qwen_asr.inference.utils as qwen_utils
         from qwen_asr import Qwen3ASRModel
+
+        # Set optimal chunk duration to prevent autoregressive hallucination loops on long audio
+        chunk_sec = float(chunk_size) if chunk_size else 30.0
+        qwen_asr_mod.MAX_FORCE_ALIGN_INPUT_SECONDS = chunk_sec
+        qwen_utils.MAX_FORCE_ALIGN_INPUT_SECONDS = chunk_sec
+        qwen_asr_mod.MAX_ASR_INPUT_SECONDS = chunk_sec
+        qwen_utils.MAX_ASR_INPUT_SECONDS = chunk_sec
 
         # Standardize language code/name for Qwen3 if provided (e.g. 'en' -> 'English')
         lang_map = {
@@ -296,12 +307,17 @@ def run_pipeline(
                 forced_aligner_kwargs=aligner_kwargs,
             )
 
+        # Enforce sequential chunk alignment (batch size 1) to avoid MPS tensor padding zero-timestamp bug
+        model.max_inference_batch_size = 1
+
         # Attach single overall progress tracker to chunk-level ASR inference
         curr_chunk = 0
+        total_asr_chunks = 1
         if hasattr(model, "_infer_asr_transformers"):
             def infer_asr_with_progress(contexts, wavs, languages):
-                nonlocal curr_chunk
+                nonlocal curr_chunk, total_asr_chunks
                 total_chunks = len(wavs)
+                total_asr_chunks = total_chunks
                 batch_size = 1 if chosen_device == "mps" else (model.max_inference_batch_size if model.max_inference_batch_size > 0 else 1)
 
                 outs = []
@@ -320,7 +336,11 @@ def run_pipeline(
                     inputs = model.processor(text=sub_text, audio=sub_wavs, return_tensors="pt", padding=True)
                     inputs = inputs.to(model.model.device).to(model.model.dtype)
 
-                    text_ids = model.model.generate(**inputs, max_new_tokens=model.max_new_tokens)
+                    text_ids = model.model.generate(
+                        **inputs,
+                        max_new_tokens=model.max_new_tokens,
+                        repetition_penalty=1.1,
+                    )
 
                     decoded = model.processor.batch_decode(
                         text_ids.sequences[:, inputs["input_ids"].shape[1]:],
@@ -332,6 +352,25 @@ def run_pipeline(
                 return outs
 
             model._infer_asr_transformers = infer_asr_with_progress
+
+        # Wrap forced aligner to track alignment progress per chunk
+        align_curr = 0
+        if do_align and hasattr(model, "forced_aligner") and model.forced_aligner is not None:
+            orig_align = model.forced_aligner.align
+
+            def align_with_progress(audio, text, language):
+                nonlocal align_curr
+                batch_count = len(audio) if isinstance(audio, list) else 1
+                align_curr += batch_count
+                denom = max(1, total_asr_chunks)
+                progress.update(
+                    task_id,
+                    completed=2.0 + min(1.0, align_curr / denom),
+                    description=f"[3/5] Aligning timestamps (chunk {align_curr}/{denom})...",
+                )
+                return orig_align(audio=audio, text=text, language=language)
+
+            model.forced_aligner.align = align_with_progress
 
         progress.update(task_id, description="[2/5] Transcribing speech...")
         with torch.inference_mode():
@@ -347,17 +386,27 @@ def run_pipeline(
         progress.update(task_id, completed=2.0)
 
         # Stage 3: Word Alignment Extraction
-        progress.update(task_id, description="[3/5] Aligning timestamps...")
+        progress.update(task_id, completed=3.0, description="[3/5] Processing timestamps...")
         words: List[Dict[str, Any]] = []
         if do_align and res.time_stamps and hasattr(res.time_stamps, "items"):
             for item in res.time_stamps.items:
+                w_start = float(item.start_time)
+                w_end = float(item.end_time)
+                if w_end <= w_start:
+                    w_end = round(w_start + 0.05, 3)
                 words.append({
                     "text": item.text,
-                    "start": float(item.start_time),
-                    "end": float(item.end_time),
+                    "start": w_start,
+                    "end": w_end,
                     "speaker": None,
                 })
-        progress.update(task_id, completed=3.0)
+
+        # Sanitize timestamps: ensure monotonically non-decreasing start times and valid positive durations
+        for i in range(1, len(words)):
+            if words[i]["start"] < words[i - 1]["start"]:
+                words[i]["start"] = words[i - 1]["end"]
+            if words[i]["end"] <= words[i]["start"]:
+                words[i]["end"] = round(words[i]["start"] + 0.05, 3)
 
         # Stage 4: Speaker Diarization (PyAnnote)
         speaker_labeled = False
@@ -549,6 +598,12 @@ def main():
         help="Duration in seconds to process (useful for quick testing, e.g. 10).",
     )
     parser.add_argument(
+        "--chunk-size",
+        type=float,
+        default=30.0,
+        help="Chunk duration in seconds for ASR and forced alignment (default: 30.0s).",
+    )
+    parser.add_argument(
         "--cleanup-audio",
         action="store_true",
         help="Delete intermediate 16kHz WAV file after completion.",
@@ -579,6 +634,7 @@ def main():
         max_speakers=args.max_speakers,
         start_time=args.start_time,
         duration=args.duration,
+        chunk_size=args.chunk_size,
         cleanup_audio=args.cleanup_audio,
     )
 
