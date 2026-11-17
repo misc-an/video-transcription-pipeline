@@ -61,6 +61,19 @@ def smart_join_tokens(tokens: List[str]) -> str:
     return "".join(result).strip()
 
 
+SENTENCE_TERMINATORS = {".", "?", "!", "。", "？", "！"}
+STANDALONE_INTERJECTIONS = {
+    "yes", "yeah", "no", "okay", "ok", "right", "sure", "true", "exactly",
+    "mm-hmm", "mhm", "yep", "nope", "alright", "correct",
+}
+
+
+def is_sentence_terminator(text: str) -> bool:
+    """Check if token ends with sentence-terminating punctuation."""
+    t = text.rstrip("\"')]}”’ \t\n")
+    return bool(t and t[-1] in SENTENCE_TERMINATORS)
+
+
 def smooth_speaker_assignments(
     words: List[Dict[str, Any]],
     min_words_threshold: int = 3,
@@ -106,7 +119,72 @@ def smooth_speaker_assignments(
                 w1["speaker"] = prev_w["speaker"]
                 w2["speaker"] = prev_w["speaker"]
 
-    # Pass 2: Boundary smoothing for 1-2 word blips adjacent to a long continuous run without a pause
+    # Pass 2: Sentence-initial handoff smoothing
+    # When Speaker A ends a sentence with punctuation (. ? !), but the next 1-4 words (run_len <= 4)
+    # were assigned to Speaker A due to PyAnnote onset latency / collar before switching to Speaker B
+    # without a pause (< 0.4s), reassign those 1-4 words to Speaker B.
+    for i in range(1, len(words) - 1):
+        if not is_sentence_terminator(words[i - 1].get("text", "")):
+            continue
+        spk_a = words[i].get("speaker")
+        if not spk_a:
+            continue
+        j = i
+        while j < len(words) and words[j].get("speaker") == spk_a:
+            if j > i and (float(words[j]["start"]) - float(words[j - 1]["end"])) >= pause_threshold:
+                break
+            if is_sentence_terminator(words[j].get("text", "")):
+                break
+            j += 1
+        run_len = j - i
+        if 1 <= run_len <= 4 and j < len(words):
+            spk_b = words[j].get("speaker")
+            if spk_b and spk_b != spk_a:
+                pause_to_b = float(words[j]["start"]) - float(words[j - 1]["end"])
+                if pause_to_b < pause_threshold:
+                    for k in range(i, j):
+                        words[k]["speaker"] = spk_b
+
+    # Pass 3: Sentence-final handoff smoothing
+    # When Speaker A is speaking a continuous sentence (>= 2 words prior), but the final 1-2 words
+    # of that sentence (ending in sentence terminator . ? !) were assigned to Speaker B because
+    # Speaker B's onset collar overlapped the end of the sentence without a pause (< 0.4s),
+    # reassign those final 1-2 words back to Speaker A (excluding standalone interjections).
+    for j in range(1, len(words)):
+        if not is_sentence_terminator(words[j].get("text", "")):
+            continue
+        spk_b = words[j].get("speaker")
+        if not spk_b:
+            continue
+        for run_len in (1, 2):
+            k = j - run_len + 1
+            if k <= 0:
+                continue
+            if not all(words[m].get("speaker") == spk_b for m in range(k, j + 1)):
+                continue
+            prev_w = words[k - 1]
+            spk_a = prev_w.get("speaker")
+            if not spk_a or spk_a == spk_b:
+                continue
+            if is_sentence_terminator(prev_w.get("text", "")):
+                continue
+            pause = float(words[k]["start"]) - float(prev_w["end"])
+            if pause >= pause_threshold:
+                continue
+            clean_word = words[k].get("text", "").strip(".,!?:;\"'").lower()
+            if run_len == 1 and clean_word in STANDALONE_INTERJECTIONS:
+                continue
+            lead_in = 0
+            m = k - 1
+            while m >= 0 and words[m].get("speaker") == spk_a and not is_sentence_terminator(words[m].get("text", "")):
+                lead_in += 1
+                m -= 1
+            if lead_in >= 2:
+                for m in range(k, j + 1):
+                    words[m]["speaker"] = spk_a
+                break
+
+    # Pass 4: Boundary smoothing for 1-2 word blips adjacent to a long continuous run without a pause
     runs: List[Tuple[int, int, Optional[str]]] = []
     i = 0
     while i < len(words):
@@ -127,8 +205,8 @@ def smooth_speaker_assignments(
                 next_len = next_end - next_start
                 pause_after = float(words[next_start]["start"]) - float(words[end_idx - 1]["end"])
                 if pause_after < pause_threshold and next_len >= min_words_threshold and next_spk is not None:
-                    for j in range(start_idx, end_idx):
-                        words[j]["speaker"] = next_spk
+                    for m in range(start_idx, end_idx):
+                        words[m]["speaker"] = next_spk
                     continue
 
             # Check merge backward into previous run if previous run was long and there is no pause
@@ -136,10 +214,10 @@ def smooth_speaker_assignments(
                 prev_start, prev_end, prev_spk = runs[r_idx - 1]
                 prev_len = prev_end - prev_start
                 pause_before = float(words[start_idx]["start"]) - float(words[prev_end - 1]["end"])
-                prev_ends_sentence = words[prev_end - 1]["text"][-1:] in ".?!"
+                prev_ends_sentence = is_sentence_terminator(words[prev_end - 1]["text"])
                 if pause_before < pause_threshold and not prev_ends_sentence and prev_len >= min_words_threshold and prev_spk is not None:
-                    for j in range(start_idx, end_idx):
-                        words[j]["speaker"] = prev_spk
+                    for m in range(start_idx, end_idx):
+                        words[m]["speaker"] = prev_spk
 
     return words
 

@@ -119,6 +119,54 @@ def test_smooth_speaker_assignments_boundary_merge():
     assert [w["speaker"] for w in smoothed[1:]] == ["SPEAKER_02"] * 6
 
 
+def test_smooth_speaker_assignments_sentence_initial_handoff():
+    """Verify sentence-initial words misattributed to previous speaker due to latency are reassigned."""
+    words = [
+        {"text": "How", "start": 305.34, "end": 305.5, "speaker": "SPEAKER_02"},
+        {"text": "did", "start": 305.5, "end": 305.9, "speaker": "SPEAKER_02"},
+        {"text": "you", "start": 305.9, "end": 306.3, "speaker": "SPEAKER_02"},
+        {"text": "know", "start": 306.3, "end": 306.7, "speaker": "SPEAKER_02"},
+        {"text": "they", "start": 306.7, "end": 307.0, "speaker": "SPEAKER_02"},
+        {"text": "have", "start": 307.0, "end": 307.3, "speaker": "SPEAKER_02"},
+        {"text": "the", "start": 307.3, "end": 307.6, "speaker": "SPEAKER_02"},
+        {"text": "policy?", "start": 307.6, "end": 308.01, "speaker": "SPEAKER_02"},
+        # Next sentence starts immediately (< 0.4s pause), 3 words misattributed to SPEAKER_02
+        {"text": "I", "start": 308.02, "end": 308.11, "speaker": "SPEAKER_02"},
+        {"text": "think", "start": 308.11, "end": 308.58, "speaker": "SPEAKER_02"},
+        {"text": "in", "start": 308.58, "end": 308.78, "speaker": "SPEAKER_02"},
+        # Established turn of SPEAKER_00
+        {"text": "the", "start": 308.78, "end": 309.07, "speaker": "SPEAKER_00"},
+        {"text": "class", "start": 309.09, "end": 309.47, "speaker": "SPEAKER_00"},
+        {"text": "with", "start": 309.59, "end": 309.93, "speaker": "SPEAKER_00"},
+        {"text": "Annika.", "start": 309.93, "end": 310.77, "speaker": "SPEAKER_00"},
+    ]
+    smoothed = smooth_speaker_assignments(words)
+    # Question stays with SPEAKER_02
+    assert [w["speaker"] for w in smoothed[:8]] == ["SPEAKER_02"] * 8
+    # 'I think in the class with Annika.' belongs entirely to SPEAKER_00
+    assert [w["speaker"] for w in smoothed[8:]] == ["SPEAKER_00"] * 7
+
+
+def test_smooth_speaker_assignments_sentence_final_handoff():
+    """Verify final words of a sentence overlapping next speaker's onset collar are preserved."""
+    words = [
+        {"text": "It", "start": 100.0, "end": 100.2, "speaker": "SPEAKER_01"},
+        {"text": "makes", "start": 100.2, "end": 100.5, "speaker": "SPEAKER_01"},
+        {"text": "sense", "start": 100.5, "end": 100.8, "speaker": "SPEAKER_01"},
+        {"text": "in", "start": 100.8, "end": 101.0, "speaker": "SPEAKER_01"},
+        {"text": "our", "start": 101.0, "end": 101.3, "speaker": "SPEAKER_01"},
+        # 'studies.' overlapping next speaker collar
+        {"text": "studies.", "start": 101.35, "end": 101.8, "speaker": "SPEAKER_00"},
+        # Next speaker real turn
+        {"text": "Yeah.", "start": 102.0, "end": 102.3, "speaker": "SPEAKER_00"},
+    ]
+    smoothed = smooth_speaker_assignments(words)
+    # 'studies.' merged back into SPEAKER_01
+    assert [w["speaker"] for w in smoothed[:6]] == ["SPEAKER_01"] * 6
+    # 'Yeah.' stays with SPEAKER_00
+    assert smoothed[6]["speaker"] == "SPEAKER_00"
+
+
 def test_group_words_into_segments():
     words = [
         {"text": "Hello", "start": 0.0, "end": 0.4, "speaker": "SPEAKER_00"},
