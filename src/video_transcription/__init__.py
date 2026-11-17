@@ -3,7 +3,7 @@ Universal Video-to-Text Transcription & Speaker Diarization Pipeline.
 Powered by FFmpeg, Qwen3-ASR (1.7B), and PyAnnote.
 """
 
-from .audio import extract_audio_ffmpeg, find_ffmpeg
+from .audio import extract_audio_ffmpeg, find_ffmpeg, get_media_duration_ffprobe
 from .export import (
     format_timestamp_inqscribe,
     format_timestamp_srt,

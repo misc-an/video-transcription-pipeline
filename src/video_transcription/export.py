@@ -97,23 +97,6 @@ def save_transcription_outputs(
                 else:
                     f.write(f"{turn_text}\n\n")
 
-    # 1b. Grouped / Sorted by Speaker (.by_speaker.txt)
-    by_speaker_path = parent_dir / f"{stem_name}.by_speaker.txt"
-    with open(by_speaker_path, "w", encoding="utf-8") as f:
-        speaker_turns: Dict[str, List[str]] = {}
-        for seg in segments:
-            spk = seg.get("speaker") if include_speakers else None
-            txt = seg.get("text", "").strip()
-            if txt:
-                spk_label = spk or "TRANSCRIPT"
-                speaker_turns.setdefault(spk_label, []).append(txt)
-
-        for spk in sorted(speaker_turns.keys()):
-            f.write(f"=== {spk} ===\n\n")
-            for t in speaker_turns[spk]:
-                f.write(f"- {t}\n")
-            f.write("\n")
-
     # 2. SubRip Subtitles (.srt)
     srt_path = parent_dir / f"{stem_name}.srt"
     with open(srt_path, "w", encoding="utf-8") as f:
@@ -180,7 +163,6 @@ def save_transcription_outputs(
 
     return {
         "txt": txt_path,
-        "by_speaker": by_speaker_path,
         "srt": srt_path,
         "vtt": vtt_path,
         "tsv": tsv_path,

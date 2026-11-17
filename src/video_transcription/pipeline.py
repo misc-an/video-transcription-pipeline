@@ -27,7 +27,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module=r"pyannote.*")
 warnings.filterwarnings("ignore", message=r".*torchcodec.*")
 warnings.filterwarnings("ignore", message=r".*upgrade_checkpoint.*")
 
-from .audio import extract_audio_ffmpeg
+from .audio import extract_audio_ffmpeg, get_media_duration_ffprobe
 from .export import save_transcription_outputs
 
 
@@ -294,6 +294,25 @@ def run_pipeline(
                     duration=duration,
                     show_progress=False,
                 )
+
+        # Detect incomplete or truncated media files on disk
+        if duration is None:
+            try:
+                import soundfile as sf
+                wav_info = sf.info(str(extracted_wav))
+                actual_wav_sec = wav_info.duration
+                container_sec = get_media_duration_ffprobe(media_path)
+                if container_sec and container_sec > actual_wav_sec + 15.0:
+                    console.print(
+                        f"\n[bold yellow]⚠ Warning: Input media file is truncated on disk![/bold yellow]\n"
+                        f"  • Container header indicates: [cyan]{format_timestamp_vtt(container_sec)}[/cyan] ({container_sec/60:.1f} min)\n"
+                        f"  • Actual audio stream on disk: [cyan]{format_timestamp_vtt(actual_wav_sec)}[/cyan] ({actual_wav_sec/60:.1f} min)\n"
+                        f"  • File size on disk: {media_path.stat().st_size / (1024*1024):.1f} MB (an intact {container_sec/60:.1f} min file would be ~{container_sec / actual_wav_sec * (media_path.stat().st_size / (1024*1024)):.0f} MB)\n"
+                        f"  • The media stream was interrupted during copying or download. Processing available audio.\n"
+                    )
+            except Exception:
+                pass
+
         progress.update(task_id, completed=1.0, description="[2/5] Loading Qwen3-ASR model...")
 
         # Stage 2: Qwen3-ASR Model Loading & Transcription
@@ -530,8 +549,6 @@ def run_pipeline(
     summary_table.add_column("File", style="green")
     summary_table.add_row("Detected Language", detected_lang)
     summary_table.add_row("TXT Transcript", str(saved_files["txt"]))
-    if speaker_labeled and "by_speaker" in saved_files:
-        summary_table.add_row("TXT (By Speaker)", str(saved_files["by_speaker"]))
     summary_table.add_row("SRT Subtitles", str(saved_files["srt"]))
     summary_table.add_row("VTT Subtitles", str(saved_files["vtt"]))
     summary_table.add_row("TSV InqScribe", str(saved_files["tsv"]))

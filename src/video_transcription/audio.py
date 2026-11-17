@@ -21,6 +21,29 @@ def find_ffmpeg() -> str:
     )
 
 
+def get_media_duration_ffprobe(media_path: Path) -> Optional[float]:
+    """Retrieve media container duration in seconds via ffprobe if available."""
+    ffprobe_bin = shutil.which("ffprobe")
+    if not ffprobe_bin:
+        for candidate in ["/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe", "/usr/bin/ffprobe"]:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                ffprobe_bin = candidate
+                break
+    if not ffprobe_bin:
+        return None
+    try:
+        cmd = [ffprobe_bin, "-v", "error", "-show_entries", "format=duration", "-of", "json", str(media_path)]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            import json
+            data = json.loads(res.stdout)
+            val = data.get("format", {}).get("duration")
+            return float(val) if val is not None else None
+    except Exception:
+        pass
+    return None
+
+
 def extract_audio_ffmpeg(
     media_path: Path,
     output_wav_path: Path,
