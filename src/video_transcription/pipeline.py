@@ -1,7 +1,6 @@
-"""Main transcription and diarization pipeline execution using Qwen3-ASR 1.7B and PyAnnote."""
+"""Main transcription and diarization pipeline execution with pluggable ASR backends."""
 
 import argparse
-import math
 import os
 import sys
 import warnings
@@ -27,7 +26,7 @@ warnings.filterwarnings("ignore", message=r".*torchcodec.*")
 warnings.filterwarnings("ignore", message=r".*upgrade_checkpoint.*")
 
 from .audio import extract_audio_ffmpeg, get_media_duration_ffprobe
-from .export import save_transcription_outputs
+from .export import format_timestamp_vtt, save_transcription_outputs
 
 
 def is_cjk(char: str) -> bool:
@@ -181,8 +180,15 @@ def determine_output_dir(media_path: Path, output_dir: Optional[str] = None) -> 
 def run_pipeline(
     media_file: str,
     output_dir: Optional[str] = None,
+    engine: Optional[str] = None,
+    # Qwen-specific
     asr_model_name: str = "Qwen/Qwen3-ASR-1.7B",
     aligner_model_name: str = "Qwen/Qwen3-ForcedAligner-0.6B",
+    # whisper.cpp-specific
+    whisper_model: str = "large-v3",
+    whisper_threads: Optional[int] = None,
+    no_gpu: bool = False,
+    # Shared
     language: Optional[str] = None,
     device: Optional[str] = None,
     do_align: bool = True,
@@ -200,6 +206,27 @@ def run_pipeline(
     if not media_path.exists():
         raise FileNotFoundError(f"Input media file not found: {media_path}")
 
+    # Resolve ASR engine (normalizing aliases)
+    from .backends import get_available_backends, get_default_backend
+
+    if engine:
+        norm_engine = engine.lower()
+        if norm_engine in ("whisper", "whisper.cpp", "whispercpp"):
+            norm_engine = "whispercpp"
+
+        available = get_available_backends()
+        if norm_engine not in available:
+            raise ImportError(
+                f"ASR engine '{engine}' is not available.\n"
+                f"Available backends: {available or '(none)'}.\n"
+                f"To install:\n"
+                f"  • Qwen3-ASR:   uv sync --extra qwen\n"
+                f"  • whisper.cpp: brew install whisper-cpp"
+            )
+        chosen_engine = norm_engine
+    else:
+        chosen_engine = get_default_backend()
+
     # Set up output directory and base stem preserving internal dots
     out_dir = determine_output_dir(media_path, output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -208,7 +235,7 @@ def run_pipeline(
         base_name = base_name[:-len(".extracted")]
     output_stem = out_dir / base_name
 
-    # Determine hardware device and dtype
+    # Determine hardware device and dtype for PyTorch stages (Qwen & PyAnnote)
     import torch
     if device is None:
         if torch.cuda.is_available():
@@ -231,15 +258,28 @@ def run_pipeline(
 
     console = Console()
 
+    # Build engine display info
+    if chosen_engine == "qwen":
+        engine_display = f"Qwen3-ASR ({asr_model_name})"
+        device_display = f"{chosen_device.upper()}, {chosen_dtype}"
+    else:
+        gpu_label = "CPU only" if no_gpu else "Metal GPU (Apple Silicon)"
+        engine_display = f"whisper.cpp ({whisper_model})"
+        device_display = f"ASR: {gpu_label}, Diarization: {chosen_device.upper()}"
+
     # Display configuration panel
     info_table = Table(show_header=False, box=None, padding=(0, 1))
     info_table.add_column("Key", style="bold cyan", width=18)
     info_table.add_column("Value", style="white")
     info_table.add_row("Input Media", str(media_path))
     info_table.add_row("Output Dir", str(out_dir))
-    info_table.add_row("ASR Model", f"{asr_model_name} ({chosen_device.upper()}, {chosen_dtype})")
-    info_table.add_row("Chunk Size", f"{chunk_size}s")
-    info_table.add_row("Forced Alignment", "Enabled" if do_align else "Disabled")
+    info_table.add_row("ASR Engine", engine_display)
+    info_table.add_row("Device", device_display)
+    if chosen_engine == "qwen":
+        info_table.add_row("Chunk Size", f"{chunk_size}s")
+        info_table.add_row("Forced Alignment", "Enabled" if do_align else "Disabled")
+    else:
+        info_table.add_row("Word Timestamps", "Enabled (Attention DTW)")
     info_table.add_row("Diarization", "Enabled (PyAnnote)" if do_diarize else "Disabled")
     if duration:
         info_table.add_row("Segment Limit", f"start={start_time or 0}s, duration={duration}s")
@@ -248,9 +288,12 @@ def run_pipeline(
     console.print()
 
     # Suppress verbose third-party logging to prevent terminal line duplicates
-    import transformers
-    transformers.utils.logging.disable_progress_bar()
-    transformers.logging.set_verbosity_error()
+    try:
+        import transformers
+        transformers.utils.logging.disable_progress_bar()
+        transformers.logging.set_verbosity_error()
+    except ImportError:
+        pass
     import huggingface_hub
     huggingface_hub.utils.disable_progress_bars()
 
@@ -281,7 +324,6 @@ def run_pipeline(
                     output_wav_path=temp_wav,
                     start_time=start_time,
                     duration=duration,
-                    show_progress=False,
                 )
                 temp_wav.replace(extracted_wav)
             else:
@@ -290,7 +332,6 @@ def run_pipeline(
                     output_wav_path=extracted_wav,
                     start_time=start_time,
                     duration=duration,
-                    show_progress=False,
                 )
 
         # Detect incomplete or truncated media files on disk
@@ -311,158 +352,45 @@ def run_pipeline(
             except Exception:
                 pass
 
-        progress.update(task_id, completed=1.0, description="[2/5] Loading Qwen3-ASR model...")
-
-        # Stage 2: Qwen3-ASR Model Loading & Transcription
-        import qwen_asr.inference.qwen3_asr as qwen_asr_mod
-        import qwen_asr.inference.utils as qwen_utils
-        from qwen_asr import Qwen3ASRModel
-
-        # Set optimal chunk duration to prevent autoregressive hallucination loops on long audio
-        chunk_sec = float(chunk_size) if chunk_size else 30.0
-        qwen_asr_mod.MAX_FORCE_ALIGN_INPUT_SECONDS = chunk_sec
-        qwen_utils.MAX_FORCE_ALIGN_INPUT_SECONDS = chunk_sec
-        qwen_asr_mod.MAX_ASR_INPUT_SECONDS = chunk_sec
-        qwen_utils.MAX_ASR_INPUT_SECONDS = chunk_sec
-
-        # Standardize language code/name for Qwen3 if provided (e.g. 'en' -> 'English')
-        lang_map = {
-            "en": "English", "zh": "Chinese", "es": "Spanish", "fr": "French",
-            "de": "German", "ja": "Japanese", "ko": "Korean", "ru": "Russian",
-            "it": "Italian", "pt": "Portuguese", "ar": "Arabic", "hi": "Hindi"
-        }
-        qwen_lang = lang_map.get(language.lower(), language) if language else None
-
-        aligner_kwargs = dict(device_map=chosen_device, dtype=chosen_dtype) if do_align else None
-
-        # Load from local cache first (fast, offline, no repeated network calls); fall back to downloading
-        model = None
-        try:
-            local_aligner_kwargs = dict(aligner_kwargs, local_files_only=True) if aligner_kwargs else None
-            model = Qwen3ASRModel.from_pretrained(
-                asr_model_name,
+        # Stage 2-3: ASR Transcription & Alignment (dispatched to selected backend)
+        if chosen_engine == "qwen":
+            from .backends.qwen_backend import transcribe_qwen
+            pipeline_result = transcribe_qwen(
+                audio_path=str(extracted_wav),
+                asr_model_name=asr_model_name,
+                aligner_model_name=aligner_model_name,
+                language=language,
+                device=chosen_device,
                 dtype=chosen_dtype,
-                device_map=chosen_device,
-                local_files_only=True,
-                forced_aligner=aligner_model_name if do_align else None,
-                forced_aligner_kwargs=local_aligner_kwargs,
+                do_align=do_align,
+                chunk_size=chunk_size,
+                progress=progress,
+                task_id=task_id,
             )
-        except Exception:
-            model = Qwen3ASRModel.from_pretrained(
-                asr_model_name,
-                dtype=chosen_dtype,
-                device_map=chosen_device,
-                forced_aligner=aligner_model_name if do_align else None,
-                forced_aligner_kwargs=aligner_kwargs,
+        elif chosen_engine == "whispercpp":
+            from .backends.whispercpp_backend import transcribe_whispercpp
+            pipeline_result = transcribe_whispercpp(
+                audio_path=str(extracted_wav),
+                model_name=whisper_model,
+                language=language,
+                threads=whisper_threads,
+                no_gpu=no_gpu,
+                progress=progress,
+                task_id=task_id,
             )
+        else:
+            raise ValueError(f"Unknown ASR engine: {chosen_engine}")
 
-        # Enforce sequential chunk alignment (batch size 1) to avoid MPS tensor padding zero-timestamp bug
-        model.max_inference_batch_size = 1
+        full_text = pipeline_result["text"]
+        detected_lang = pipeline_result["language"]
+        words = pipeline_result["words"]
+        segments = pipeline_result["segments"]
 
-        # Attach single overall progress tracker to chunk-level ASR inference
-        curr_chunk = 0
-        total_asr_chunks = 1
-        if hasattr(model, "_infer_asr_transformers"):
-            def infer_asr_with_progress(contexts, wavs, languages):
-                nonlocal curr_chunk, total_asr_chunks
-                total_chunks = len(wavs)
-                total_asr_chunks = total_chunks
-                batch_size = 1 if chosen_device == "mps" else (model.max_inference_batch_size if model.max_inference_batch_size > 0 else 1)
-
-                outs = []
-                texts = [model._build_text_prompt(context=c, force_language=fl) for c, fl in zip(contexts, languages)]
-
-                for i in range(0, len(texts), batch_size):
-                    sub_text = texts[i : i + batch_size]
-                    sub_wavs = wavs[i : i + batch_size]
-                    curr_chunk += len(sub_text)
-                    progress.update(
-                        task_id,
-                        completed=1.0 + (curr_chunk / total_chunks),
-                        description=f"[2/5] Transcribing speech (chunk {curr_chunk}/{total_chunks})...",
-                    )
-
-                    inputs = model.processor(text=sub_text, audio=sub_wavs, return_tensors="pt", padding=True)
-                    inputs = inputs.to(model.model.device).to(model.model.dtype)
-
-                    text_ids = model.model.generate(
-                        **inputs,
-                        max_new_tokens=model.max_new_tokens,
-                        repetition_penalty=1.1,
-                    )
-
-                    decoded = model.processor.batch_decode(
-                        text_ids.sequences[:, inputs["input_ids"].shape[1]:],
-                        skip_special_tokens=True,
-                        clean_up_tokenization_spaces=False,
-                    )
-                    outs.extend(list(decoded))
-
-                return outs
-
-            model._infer_asr_transformers = infer_asr_with_progress
-
-        # Wrap forced aligner to track alignment progress per chunk
-        align_curr = 0
-        if do_align and hasattr(model, "forced_aligner") and model.forced_aligner is not None:
-            orig_align = model.forced_aligner.align
-
-            def align_with_progress(audio, text, language):
-                nonlocal align_curr
-                batch_count = len(audio) if isinstance(audio, list) else 1
-                align_curr += batch_count
-                denom = max(1, total_asr_chunks)
-                progress.update(
-                    task_id,
-                    completed=2.0 + min(1.0, align_curr / denom),
-                    description=f"[3/5] Aligning timestamps (chunk {align_curr}/{denom})...",
-                )
-                return orig_align(audio=audio, text=text, language=language)
-
-            model.forced_aligner.align = align_with_progress
-
-        progress.update(task_id, description="[2/5] Transcribing speech...")
-        with torch.inference_mode():
-            transcriptions = model.transcribe(
-                audio=str(extracted_wav),
-                language=qwen_lang,
-                return_time_stamps=do_align,
-            )
-
-        res = transcriptions[0]
-        detected_lang = res.language or (language or "unknown")
-        full_text = res.text or ""
-        progress.update(task_id, completed=2.0)
-
-        # Stage 3: Word Alignment Extraction
-        progress.update(task_id, completed=3.0, description="[3/5] Processing timestamps...")
-        words: List[Dict[str, Any]] = []
-        if do_align and res.time_stamps and hasattr(res.time_stamps, "items"):
-            for item in res.time_stamps.items:
-                w_start = float(item.start_time)
-                w_end = float(item.end_time)
-                if w_end <= w_start:
-                    w_end = round(w_start + 0.05, 3)
-                words.append({
-                    "text": item.text,
-                    "start": w_start,
-                    "end": w_end,
-                    "speaker": None,
-                })
-
-        # Sanitize timestamps: ensure monotonically non-decreasing start times and valid positive durations
-        for i in range(1, len(words)):
-            if words[i]["start"] < words[i - 1]["start"]:
-                words[i]["start"] = words[i - 1]["end"]
-            if words[i]["end"] <= words[i]["start"]:
-                words[i]["end"] = round(words[i]["start"] + 0.05, 3)
-
-        # Stage 4: Speaker Diarization (PyAnnote)
+        # Stage 4: Speaker Diarization (PyAnnote) — shared between backends
         speaker_labeled = False
         speaker_turns: List[Tuple[float, float, str]] = []
         if do_diarize:
             progress.update(task_id, description="[4/5] Diarizing speakers (PyAnnote)...")
-            import huggingface_hub
             token = hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN") or huggingface_hub.get_token()
 
             if not token:
@@ -496,28 +424,27 @@ def run_pipeline(
                     if words and speaker_turns:
                         assign_speakers_to_words(words, speaker_turns)
                         speaker_labeled = True
+                        # Re-group segments with speaker labels
+                        segments = group_words_into_segments(words)
                     elif speaker_turns:
+                        for seg in segments:
+                            best_spk = None
+                            best_overlap = 0.0
+                            for t_start, t_end, spk in speaker_turns:
+                                overlap = max(0.0, min(seg["end"], t_end) - max(seg["start"], t_start))
+                                if overlap > best_overlap:
+                                    best_overlap = overlap
+                                    best_spk = spk
+                            seg["speaker"] = best_spk
                         speaker_labeled = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    console.print(f"[yellow]⚠ Speaker diarization failed: {e}[/yellow]")
         else:
             progress.update(task_id, description="[4/5] Diarization skipped...")
         progress.update(task_id, completed=4.0)
 
-        # Build Structured Output Segments
-        if words:
-            segments = group_words_into_segments(words)
-        else:
-            # Fallback if no timestamps were produced
-            segments = [{
-                "start": 0.0,
-                "end": 0.0,
-                "text": full_text,
-                "speaker": "SPEAKER_00" if speaker_labeled else None,
-                "words": [],
-            }]
-
-        pipeline_result: Dict[str, Any] = {
+        # Rebuild pipeline_result with diarization data
+        pipeline_result = {
             "text": full_text,
             "language": detected_lang,
             "segments": segments,
@@ -545,6 +472,7 @@ def run_pipeline(
     summary_table = Table(show_header=False, box=None, padding=(0, 1))
     summary_table.add_column("Type", style="bold cyan", width=18)
     summary_table.add_column("File", style="green")
+    summary_table.add_row("Engine", chosen_engine.title())
     summary_table.add_row("Detected Language", detected_lang)
     summary_table.add_row("TXT Transcript", str(saved_files["txt"]))
     summary_table.add_row("SRT Subtitles", str(saved_files["srt"]))
@@ -560,7 +488,7 @@ def run_pipeline(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Universal Video-to-Text Pipeline using FFmpeg and Qwen3-ASR 1.7B with PyAnnote Speaker Diarization."
+        description="Universal Video-to-Text Pipeline with Qwen3-ASR and whisper.cpp backends, FFmpeg, and PyAnnote Speaker Diarization."
     )
     parser.add_argument("media_file", type=str, help="Path to input video or audio file.")
     parser.add_argument(
@@ -570,6 +498,15 @@ def main():
         default=None,
         help="Directory to save generated transcripts and audio (default: next to media file).",
     )
+    parser.add_argument(
+        "--engine",
+        type=str,
+        default=None,
+        choices=["qwen", "whispercpp", "whisper", "whisper.cpp"],
+        help="ASR engine: 'qwen' (Qwen3-ASR, default) or 'whispercpp' (whisper.cpp on Metal GPU).",
+    )
+
+    # Qwen-specific options
     parser.add_argument(
         "--model",
         type=str,
@@ -582,6 +519,33 @@ def main():
         default="Qwen/Qwen3-ForcedAligner-0.6B",
         help="Qwen Forced Aligner model (default: Qwen/Qwen3-ForcedAligner-0.6B).",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=float,
+        default=30.0,
+        help="Chunk duration in seconds for Qwen3 ASR and forced alignment (default: 30.0s).",
+    )
+
+    # whisper.cpp-specific options
+    parser.add_argument(
+        "--whisper-model",
+        type=str,
+        default="large-v3",
+        help="whisper.cpp GGML model name or path (default: large-v3; e.g. base, large-v3-q5_0).",
+    )
+    parser.add_argument(
+        "--whisper-threads",
+        type=int,
+        default=None,
+        help="Number of threads for whisper.cpp (default: auto).",
+    )
+    parser.add_argument(
+        "--no-gpu",
+        action="store_true",
+        help="Disable GPU/Metal acceleration in whisper.cpp and run on CPU.",
+    )
+
+    # Shared options
     parser.add_argument(
         "--language",
         "-l",
@@ -599,7 +563,7 @@ def main():
         "--no-align",
         dest="do_align",
         action="store_false",
-        help="Disable word-level forced alignment step.",
+        help="Disable word-level forced alignment step (Qwen engine).",
     )
     parser.set_defaults(do_align=True)
 
@@ -648,12 +612,6 @@ def main():
         help="Duration in seconds to process (useful for quick testing, e.g. 10).",
     )
     parser.add_argument(
-        "--chunk-size",
-        type=float,
-        default=30.0,
-        help="Chunk duration in seconds for ASR and forced alignment (default: 30.0s).",
-    )
-    parser.add_argument(
         "--timestamps-in-txt",
         action="store_true",
         help="Include [HH:MM:SS.mmm - HH:MM:SS.mmm] timestamps in the plain .txt export.",
@@ -678,8 +636,12 @@ def main():
     run_pipeline(
         media_file=args.media_file,
         output_dir=args.output_dir,
+        engine=args.engine,
         asr_model_name=model_name,
         aligner_model_name=args.aligner_model,
+        whisper_model=args.whisper_model,
+        whisper_threads=args.whisper_threads,
+        no_gpu=args.no_gpu,
         language=args.language,
         device=args.device,
         do_align=args.do_align,

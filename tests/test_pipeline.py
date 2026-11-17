@@ -1,9 +1,10 @@
-"""Automated unit tests for Qwen3-ASR pipeline components and export utilities."""
+"""Automated unit tests for pipeline components, backends, and export utilities."""
 
 import json
 from pathlib import Path
 import pytest
 
+from video_transcription.backends import get_available_backends, get_default_backend
 from video_transcription.export import (
     format_timestamp_inqscribe,
     format_timestamp_srt,
@@ -161,3 +162,16 @@ def test_determine_output_dir(tmp_path: Path):
     input_top = tmp_path / "data" / "input" / "sample.mp4"
     input_top.touch()
     assert determine_output_dir(input_top) == (tmp_path / "data" / "output").resolve()
+
+
+def test_get_available_backends():
+    backends = get_available_backends()
+    assert isinstance(backends, list)
+    # The environment has at least one backend installed
+    assert len(backends) >= 1
+    assert any(b in ("qwen", "whispercpp") for b in backends)
+
+
+def test_get_default_backend():
+    default = get_default_backend()
+    assert default in ("qwen", "whispercpp")

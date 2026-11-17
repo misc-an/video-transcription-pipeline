@@ -1,18 +1,25 @@
 # Video-to-Text Transcription Pipeline
 
-**Automated transcription of recorded interviews, lectures, and focus groups with word-level timestamps and speaker labels.**
+This tool converts spoken words in audio and video files into text transcripts. It adds word-level timestamps and speaker labels.
 
-This pipeline extracts audio from any video or audio file, transcribes it using Qwen3-ASR (supporting 52 languages), aligns word-level timestamps via forced alignment, and optionally identifies individual speakers through diarization. It produces transcripts in five formats: plain text, SRT, WebVTT, TSV (InqScribe-compatible), and structured JSON.
+The tool supports two speech recognition engines:
+- **Qwen3-ASR**: Runs on Apple Silicon GPU (MPS), NVIDIA GPU (CUDA), and CPU.
+- **whisper.cpp**: Runs on Apple Silicon GPU (Metal) and CPU.
+
+The tool writes transcripts in five formats: plain text (.txt), SubRip (.srt), WebVTT (.vtt), InqScribe tab-delimited (.tsv), and JSON (.json).
 
 ---
 
 ## Prerequisites
 
-| Requirement            | Purpose                                | Installation |
-|------------------------|----------------------------------------|-------------|
-| **Python 3.11 or 3.12** | Runtime environment                   | Installed automatically by `uv` |
-| **uv**                 | Python package and environment manager | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| **FFmpeg**             | Audio extraction from media files      | Mac: `brew install ffmpeg` · Linux: `sudo apt install ffmpeg` |
+Install these tools before you start:
+
+| Tool | Purpose | Installation Command |
+|---|---|---|
+| **Python 3.11 or 3.12** | Runtime environment | Installed automatically by `uv` |
+| **uv** | Python package manager | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| **FFmpeg** | Audio extraction | macOS: `brew install ffmpeg`<br>Linux: `sudo apt install ffmpeg` |
+| **whisper.cpp** *(optional)* | Metal GPU speech engine | macOS: `brew install whisper-cpp` |
 
 > [!IMPORTANT]
 > **Windows**: Use PowerShell. Replace `source .venv/bin/activate` with `.venv\Scripts\Activate.ps1`.
@@ -28,211 +35,197 @@ git clone https://github.com/misc-an/video-transcription-pipeline.git
 cd video-transcription-pipeline
 ```
 
-### 2. Set up once
+### 2. Run the setup script
 
-Run the setup script:
+Make the script executable and run it:
+
 ```bash
 chmod +x scripts/setup_env.sh
 ./scripts/setup_env.sh
 ```
 
-This installs all dependencies and caches the AI model weights locally (~3 GB in `~/.cache/huggingface/hub/`). Once this one-time setup finishes, the pipeline runs locally without re-downloading weights.
+Select one option when prompted:
 
-*(Manual alternative using `uv`: `uv sync && uv run download-weights`)*
+1. **Option 1**: Install Qwen3-ASR only (~3 GB download).
+2. **Option 2**: Install whisper.cpp only (~1.6 GB download).
+3. **Option 3**: Install both engines (~4.6 GB download).
+
+The script installs all dependencies and downloads the model files. The files are saved in `~/.cache/huggingface/hub/`.
 
 ---
 
 ## Usage
 
-### Basic transcription
+### 1. Basic Transcription
+
+Run this command to transcribe a file:
 
 ```bash
-uv run transcribe "path/to/recording.mp4" -l English
+uv run transcribe "recording.mp4" -l English
 ```
 
-Output files are automatically saved to `data/output/` by default (mirroring any subfolder structure from `data/input/`, e.g., `data/input/workshop/2/recording.mp4` outputs directly to `data/output/workshop/2/`). An explicit output directory can always be specified with `-o` or `--output-dir`.
+The tool writes output files to `data/output/` by default.
 
-> [!TIP]
-> **Specifying Language (`-l English`)**:
-> Explicitly passing the language flag (e.g., `-l English` or `-l en`) prevents accidental language switching on accented speech, regional dialects, or background noise, ensuring consistent recognition.
+### 2. Select the Speech Engine
 
-### Common examples
+Set the engine with the `--engine` option:
 
 ```bash
-# Full interview with speaker labels and explicit language
-uv run transcribe "interview.mp4" --diarize -l English
+# Use Qwen3-ASR (default)
+uv run transcribe "recording.mp4" --engine qwen -l English
 
-# Test with the first 30 seconds
-uv run transcribe "interview.mp4" --duration 30
-
-# Specify an output directory
-uv run transcribe "interview.mp4" --output-dir "data/output" -l English
+# Use whisper.cpp (Apple Silicon Metal GPU)
+uv run transcribe "recording.mp4" --engine whispercpp -l English
 ```
 
-### Running from any directory
-
-Install system-wide so `transcribe` works without `uv run` and from any path:
+To use a specific whisper.cpp model, use `--whisper-model`:
 
 ```bash
-uv tool install .
-transcribe "/path/to/any/recording.mp4"
+# Use 5-bit quantized model (uses ~1.6 GB RAM)
+uv run transcribe "recording.mp4" --engine whispercpp --whisper-model large-v3-q5_0
 ```
 
-Or point `uv` to the project when working from an external folder:
-```bash
-uv run --project "/path/to/video-transcription-pipeline" transcribe recording.mp4
-```
+### 3. Add Speaker Labels
 
----
+Speaker diarization identifies different speakers (`SPEAKER_00`, `SPEAKER_01`).
 
-## Speaker Diarization
+To use speaker diarization, complete these steps:
+1. Create a free account on [Hugging Face](https://huggingface.co).
+2. Accept the user conditions for [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1).
+3. Accept the user conditions for [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0).
+4. Create an access token on Hugging Face.
 
-Speaker diarization labels each segment with the speaker who said it (`SPEAKER_00`, `SPEAKER_01`, etc.). It requires a free [Hugging Face](https://huggingface.co) account with access granted to:
+Set the token in your environment:
 
-- [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
-- [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
-
-### Run with speaker labels
-
-```bash
-uv run transcribe "interview.mp4" --diarize --hf-token "hf_your_token_here"
-```
-
-Or export the token once and diarization activates automatically:
 ```bash
 export HF_TOKEN="hf_your_token_here"
-uv run transcribe "interview.mp4"
 ```
 
-Use `--no-diarize` to suppress automatic diarization when a token is set.
+Run transcription with the `--diarize` flag:
 
-If the number of speakers is known:
+```bash
+uv run transcribe "interview.mp4" --diarize -l English
+```
+
+If you know the speaker count, set the limits:
+
 ```bash
 uv run transcribe "interview.mp4" --diarize --min-speakers 2 --max-speakers 2
 ```
 
+### 4. Common Command Examples
+
+```bash
+# Process only the first 30 seconds
+uv run transcribe "interview.mp4" --duration 30
+
+# Start at 1 minute and process for 60 seconds
+uv run transcribe "interview.mp4" --start-time 00:01:00 --duration 60
+
+# Set a custom output folder
+uv run transcribe "interview.mp4" -o "my_transcripts"
+
+# Include timestamps in the plain text output
+uv run transcribe "interview.mp4" --timestamps-in-txt
+```
+
 ---
 
-## Output Formats
+## Output Files
 
-For an input file `interview.mp4`, the following files are generated:
+For an input file `interview.mp4`, the tool creates these files:
 
-| File                      | Format     | Use Case |
-|---------------------------|------------|----------|
-| `interview.txt`           | Plain text | Reading, reviewing, qualitative coding |
-| `interview.srt`           | SubRip     | Video players (VLC, YouTube) |
-| `interview.vtt`           | WebVTT     | Web browsers, HTML5 video |
-| `interview.tsv`           | Tab-delimited | [InqScribe](https://www.inqscribe.com/) import |
-| `interview.json`          | JSON       | Programmatic analysis (NVivo, ATLAS.ti, Python, R) |
-| `interview.extracted.wav` | WAV        | Extracted 16 kHz mono audio source |
-
-### Sample output (.txt)
-
-```
-SPEAKER_00: Good evening, ladies and gentlemen.
-
-SPEAKER_01: It is my privilege to introduce to you Emeritus Professor of Physics, Emeritus Dean of Engineering...
-```
-
-> [!TIP]
-> Plain `.txt` formats clean speaker turns without timestamps by default. Pass `--timestamps-in-txt` if timestamps are needed in `.txt`.
+| File | Format | Purpose |
+|---|---|---|
+| `interview.txt` | Plain text | Read, review, or edit text |
+| `interview.srt` | SubRip | Subtitles for video players (VLC, YouTube) |
+| `interview.vtt` | WebVTT | Subtitles for web browsers |
+| `interview.tsv` | Tab-delimited | Import into InqScribe |
+| `interview.json` | JSON | Read programmatically in Python or R |
+| `interview.extracted.wav` | WAV | Extracted 16 kHz mono audio file |
 
 ---
 
 ## Supported Media Formats
 
+The tool accepts these file extensions:
+
 - **Video**: `.mp4`, `.webm`, `.mkv`, `.mov`, `.avi`, `.flv`, `.wmv`, `.m4v`, `.ts`
 - **Audio**: `.mp3`, `.m4a`, `.aac`, `.flac`, `.wav`, `.ogg`, `.opus`
 
-FFmpeg normalizes all inputs to 16 kHz 16-bit mono PCM WAV internally.
+FFmpeg converts all inputs to 16 kHz 16-bit mono WAV before processing.
 
 ---
 
-## Pipeline Architecture
+## Architecture
+
+The pipeline executes five steps:
 
 ```
-Recording  →  FFmpeg (audio extraction)
-           →  Qwen3-ASR 1.7B (speech-to-text, 52 languages)
-           →  Qwen3 Forced Aligner 0.6B (word-level timestamps)
-           →  PyAnnote Diarization (speaker labels, optional)
-           →  Export (.txt, .srt, .vtt, .tsv, .json)
+1. Audio Extraction (FFmpeg)
+   ↓
+2. Speech Recognition (Qwen3-ASR or whisper.cpp)
+   ↓
+3. Word Alignment (Forced Aligner or Attention DTW)
+   ↓
+4. Speaker Diarization (PyAnnote, optional)
+   ↓
+5. File Export (.txt, .srt, .vtt, .tsv, .json)
 ```
 
-Hardware acceleration is automatic: NVIDIA GPU (CUDA), Apple Silicon (Metal/MPS), or CPU fallback.
-
-### Progress Tracking
-A single unified progress bar tracks all 5 pipeline stages and chunk progress in real time with an accurate elapsed timer.
+Hardware acceleration activates automatically:
+- Apple Silicon: Metal GPU for whisper.cpp, MPS for Qwen3-ASR and PyAnnote.
+- NVIDIA: CUDA for Qwen3-ASR and PyAnnote.
+- Other: CPU fallback.
 
 ---
 
-## CLI Reference
+## Command-Line Options
 
 | Option | Description | Default |
-|--------|------------|---------|
-| `media_file` | Path to video or audio file | *(required)* |
-| `-o`, `--output-dir` | Output directory | `data/output` (mirrors `data/input` subpaths) |
-| `--model` | ASR model ID | `Qwen/Qwen3-ASR-1.7B` |
+|---|---|---|
+| `media_file` | Path to audio or video file | *(Required)* |
+| `-o`, `--output-dir` | Output folder path | `data/output/` |
+| `--engine` | Engine choice: `qwen` or `whispercpp` | Auto-detect (prefers `qwen`) |
+| **Qwen Options** | | |
+| `--model` | Hugging Face model ID | `Qwen/Qwen3-ASR-1.7B` |
 | `--aligner-model` | Forced aligner model ID | `Qwen/Qwen3-ForcedAligner-0.6B` |
-| `-l`, `--language` | Recording language (e.g. `English`, `en`) | Auto-detect |
-| `--device` | Compute device (`cpu`, `cuda`, `mps`) | Auto-detect |
-| `--no-align` | Skip word-level alignment | Alignment enabled |
-| `--diarize` | Enable speaker diarization | Off (auto-on with token) |
-| `--no-diarize` | Disable speaker diarization | — |
-| `--hf-token` | Hugging Face access token | `$HF_TOKEN` env var |
-| `--min-speakers` | Minimum expected speakers | Automatic |
-| `--max-speakers` | Maximum expected speakers | Automatic |
-| `--chunk-size` | Chunk duration for ASR & forced alignment | `30.0`s |
-| `--start-time` | Start offset (e.g. `00:05:00`) | `0` |
-| `--duration` | Process only N seconds | Full file |
-| `--cleanup-audio` | Delete intermediate WAV after export | Keep |
-
----
-
-## Project Structure
-
-```
-video-transcription-pipeline/
-├── README.md
-├── pyproject.toml                 # Dependencies and build config
-├── requirements.txt               # Locked dependency versions
-├── uv.lock                        # Deterministic lockfile
-│
-├── scripts/
-│   ├── setup_env.sh               # Environment bootstrap
-│   ├── transcribe_pipeline.py     # Standalone pipeline runner
-│   └── download_weights.py        # Standalone model downloader
-│
-├── src/video_transcription/
-│   ├── __init__.py
-│   ├── pipeline.py                # Core transcription and diarization logic
-│   ├── audio.py                   # FFmpeg audio extraction
-│   ├── export.py                  # Output formatters (TXT, SRT, VTT, TSV, JSON)
-│   └── weights.py                 # Model download utilities
-│
-├── tests/
-│   └── test_pipeline.py           # Unit tests
-│
-├── data/
-│   ├── input/                     # Place recordings here (optional)
-│   └── output/                    # Default output location (optional)
-│
-└── examples/                      # Sample outputs from a verified run
-```
+| `--chunk-size` | Chunk length in seconds | `30.0` |
+| **whisper.cpp Options** | | |
+| `--whisper-model` | GGML model name or path | `large-v3` |
+| `--whisper-threads` | Number of compute threads | System default |
+| `--no-gpu` | Disable Metal GPU and use CPU | `false` |
+| **Shared Options** | | |
+| `-l`, `--language` | Language code (for example: `en`, `English`) | Auto-detect |
+| `--device` | Device name: `cpu`, `cuda`, or `mps` | Auto-detect |
+| `--no-align` | Disable word alignment (Qwen only) | `false` |
+| `--diarize` | Enable speaker diarization | `false` |
+| `--no-diarize` | Disable speaker diarization | `false` |
+| `--hf-token` | Hugging Face token | `$HF_TOKEN` |
+| `--min-speakers` | Minimum number of speakers | Auto-detect |
+| `--max-speakers` | Maximum number of speakers | Auto-detect |
+| `--start-time` | Start offset (seconds or `HH:MM:SS`) | `0` |
+| `--duration` | Process duration in seconds | Full file |
+| `--timestamps-in-txt` | Add timestamps to the .txt file | `false` |
+| `--cleanup-audio` | Delete intermediate WAV file | `false` |
 
 ---
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| `FFmpeg binary not found` | Install FFmpeg: Mac `brew install ffmpeg`, Linux `sudo apt install ffmpeg` |
-| `ModuleNotFoundError: No module named 'video_transcription'` | Run `uv sync` from inside the project directory |
-| Out of memory or very slow | Try `--duration 60` for a shorter segment, or `--device cpu` to reduce memory usage |
-| Speaker diarization fails | Verify: (1) valid HF token, (2) accepted both model agreements, (3) `--diarize` flag or `HF_TOKEN` exported |
+| Problem | Cause | Solution |
+|---|---|---|
+| `FFmpeg binary not found` | FFmpeg is not installed or not in PATH | Install FFmpeg: `brew install ffmpeg` |
+| `whisper-cli not found` | whisper.cpp is not installed | Install whisper.cpp: `brew install whisper-cpp` |
+| `ASR engine 'qwen' is not available` | Qwen dependencies are not installed | Run: `uv sync --extra qwen` |
+| Out of memory error | Model is too large for system RAM | Use: `--engine whispercpp --whisper-model large-v3-q5_0` |
+| Diarization fails | Missing token or model agreement | Export valid `HF_TOKEN` and accept terms on Hugging Face |
 
 ---
 
-## Running Tests
+## Verification Tests
+
+Run the test suite with this command:
 
 ```bash
 uv run --extra dev pytest
@@ -240,20 +233,6 @@ uv run --extra dev pytest
 
 ---
 
-## Glossary
-
-| Term | Definition |
-|------|-----------|
-| **Transcription** | Converting spoken words in a recording into written text |
-| **Diarization** | Identifying which speaker said what and when |
-| **ASR** | Automatic Speech Recognition — AI-based speech-to-text |
-| **Forced alignment** | Mapping each recognized word to its precise time in the audio |
-| **FFmpeg** | Open-source tool for reading and converting audio/video files |
-| **SRT / VTT** | Standard subtitle formats for video players and web |
-| **TSV** | Tab-Separated Values — a text-based tabular format |
-
----
-
 ## License
 
-This project is open source. See the repository for license details.
+This project is licensed under the MIT License.

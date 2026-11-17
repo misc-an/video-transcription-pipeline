@@ -1,14 +1,10 @@
 [project]
 name = "video-transcription-pipeline"
-version = "0.3.0"
-description = "Turn recorded interviews, lectures, and focus groups into timestamped text transcripts with speaker labels. Uses FFmpeg, Qwen3-ASR, and PyAnnote."
+version = "0.4.0"
+description = "Turn recorded interviews, lectures, and focus groups into timestamped text transcripts with speaker labels. Supports Qwen3-ASR and whisper.cpp backends with FFmpeg and PyAnnote."
 readme = "README.md"
 requires-python = ">=3.11, <3.13"
 dependencies = [
-    "qwen-asr>=0.0.6",
-    "accelerate>=1.0.0",
-    "soundfile>=0.14.0",
-    "librosa>=0.10.0",
     "pyannote-audio>=3.1.0",
     "torch>=2.2.0",
     "torchaudio>=2.2.0",
@@ -16,9 +12,18 @@ dependencies = [
     "tqdm>=4.66.0",
     "rich>=13.0.0",
     "ffmpeg-python>=0.2.0",
+    "soundfile>=0.14.0",
+    "librosa>=0.10.0",
 ]
 
 [project.optional-dependencies]
+qwen = [
+    "qwen-asr>=0.0.6",
+    "accelerate>=1.0.0",
+]
+all = [
+    "video-transcription-pipeline[qwen]",
+]
 dev = ["pytest>=8.0.0"]
 
 [build-system]

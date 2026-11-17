@@ -3009,16 +3009,14 @@ wheels = [
 
 [[package]]
 name = "video-transcription-pipeline"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
-    { name = "accelerate" },
     { name = "ffmpeg-python" },
     { name = "huggingface-hub" },
     { name = "librosa", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "librosa", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pyannote-audio" },
-    { name = "qwen-asr" },
     { name = "rich" },
     { name = "soundfile" },
     { name = "torch" },
@@ -3027,26 +3025,35 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "accelerate" },
+    { name = "qwen-asr" },
+]
 dev = [
     { name = "pytest" },
+]
+qwen = [
+    { name = "accelerate" },
+    { name = "qwen-asr" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "accelerate", specifier = ">=1.0.0" },
+    { name = "accelerate", marker = "extra == 'qwen'", specifier = ">=1.0.0" },
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
     { name = "huggingface-hub", specifier = ">=0.20.0" },
     { name = "librosa", specifier = ">=0.10.0" },
     { name = "pyannote-audio", specifier = ">=3.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "qwen-asr", specifier = ">=0.0.6" },
+    { name = "qwen-asr", marker = "extra == 'qwen'", specifier = ">=0.0.6" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "soundfile", specifier = ">=0.14.0" },
     { name = "torch", specifier = ">=2.2.0" },
     { name = "torchaudio", specifier = ">=2.2.0" },
     { name = "tqdm", specifier = ">=4.66.0" },
+    { name = "video-transcription-pipeline", extras = ["qwen"], marker = "extra == 'all'" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["qwen", "all", "dev"]
 
 [[package]]
 name = "werkzeug"
