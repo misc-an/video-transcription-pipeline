@@ -10,12 +10,19 @@ from .export import (
     format_timestamp_vtt,
     save_transcription_outputs,
 )
-from .pipeline import assign_speakers_to_words, group_words_into_segments, main as transcribe_main, run_pipeline
+from .pipeline import (
+    assign_speakers_to_words,
+    determine_output_dir,
+    group_words_into_segments,
+    main as transcribe_main,
+    run_pipeline,
+)
 from .weights import download_diarization_weights, download_qwen_weights
 
 __version__ = "0.3.0"
 __all__ = [
     "assign_speakers_to_words",
+    "determine_output_dir",
     "download_diarization_weights",
     "download_qwen_weights",
     "extract_audio_ffmpeg",

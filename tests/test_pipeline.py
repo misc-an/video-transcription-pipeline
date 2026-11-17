@@ -12,6 +12,7 @@ from video_transcription.export import (
 )
 from video_transcription.pipeline import (
     assign_speakers_to_words,
+    determine_output_dir,
     group_words_into_segments,
     smart_join_tokens,
 )
@@ -147,3 +148,22 @@ def test_save_transcription_outputs(tmp_path: Path):
     outputs_no_spk = save_transcription_outputs(result, tmp_path / "no_spk", include_speakers=False)
     tsv_no_spk_content = outputs_no_spk["tsv"].read_text(encoding="utf-8")
     assert tsv_no_spk_content == "00:00:00.00\t00:00:01.50\tHello world.\n"
+
+
+def test_determine_output_dir(tmp_path: Path):
+    # 1. Explicit output dir
+    custom_dir = tmp_path / "custom"
+    assert determine_output_dir(tmp_path / "video.mp4", str(custom_dir)) == custom_dir.resolve()
+
+    # 2. Inside data/input tree
+    input_file = tmp_path / "data" / "input" / "workshop" / "2" / "part1.mp4"
+    input_file.parent.mkdir(parents=True, exist_ok=True)
+    input_file.touch()
+
+    expected_output = tmp_path / "data" / "output" / "workshop" / "2"
+    assert determine_output_dir(input_file) == expected_output.resolve()
+
+    # 3. Inside top-level input file
+    input_top = tmp_path / "data" / "input" / "sample.mp4"
+    input_top.touch()
+    assert determine_output_dir(input_top) == (tmp_path / "data" / "output").resolve()

@@ -50,7 +50,7 @@ This installs all dependencies and caches the AI model weights locally (~3 GB in
 uv run transcribe "path/to/recording.mp4" -l English
 ```
 
-Output files are saved alongside the input file by default.
+Output files are automatically saved to `data/output/` by default (mirroring any subfolder structure from `data/input/`, e.g., `data/input/workshop/2/recording.mp4` outputs directly to `data/output/workshop/2/`). An explicit output directory can always be specified with `-o` or `--output-dir`.
 
 > [!TIP]
 > **Performance Boost with `-l English` (Up to 4x Faster)**:
@@ -172,7 +172,7 @@ Hardware acceleration is automatic: NVIDIA GPU (CUDA), Apple Silicon (Metal/MPS)
 | Option | Description | Default |
 |--------|------------|---------|
 | `media_file` | Path to video or audio file | *(required)* |
-| `-o`, `--output-dir` | Output directory | Input file directory |
+| `-o`, `--output-dir` | Output directory | `data/output` (mirrors `data/input` subpaths) |
 | `--model` | ASR model ID | `Qwen/Qwen3-ASR-1.7B` |
 | `--aligner-model` | Forced aligner model ID | `Qwen/Qwen3-ForcedAligner-0.6B` |
 | `-l`, `--language` | Recording language (e.g. `English`, `en`) | Auto-detect |

@@ -148,6 +148,37 @@ def group_words_into_segments(
     return segments
 
 
+def determine_output_dir(media_path: Path, output_dir: Optional[str] = None) -> Path:
+    """Determine destination output directory.
+
+    1. If explicit output_dir is given, use it.
+    2. If media_path is located inside a 'data/input' tree, automatically mirror to 'data/output'.
+    3. If peer or parent 'output' directory exists alongside an 'input' directory, mirror to it.
+    4. If './data/output' exists in the current working directory, route there.
+    5. Fallback to media_path.parent.
+    """
+    if output_dir:
+        return Path(output_dir).expanduser().resolve()
+
+    media_resolved = media_path.resolve()
+    parts = list(media_resolved.parts)
+    for i in range(len(parts) - 1, 0, -1):
+        if parts[i] == "input" and i > 0 and parts[i - 1] == "data":
+            new_parts = parts[:i] + ["output"] + parts[i + 1 : -1]
+            return Path(*new_parts)
+        elif parts[i] == "input":
+            peer_output = Path(*parts[:i]) / "output"
+            if peer_output.exists():
+                sub_parts = parts[i + 1 : -1]
+                return peer_output.joinpath(*sub_parts)
+
+    cwd_output = Path.cwd() / "data" / "output"
+    if cwd_output.exists():
+        return cwd_output.resolve()
+
+    return media_resolved.parent
+
+
 def run_pipeline(
     media_file: str,
     output_dir: Optional[str] = None,
@@ -171,7 +202,7 @@ def run_pipeline(
         raise FileNotFoundError(f"Input media file not found: {media_path}")
 
     # Set up output directory and base stem preserving internal dots
-    out_dir = Path(output_dir).expanduser().resolve() if output_dir else media_path.parent
+    out_dir = determine_output_dir(media_path, output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     base_name = media_path.stem
     if base_name.endswith(".extracted"):
