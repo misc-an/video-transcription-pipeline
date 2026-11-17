@@ -53,13 +53,13 @@ uv run transcribe "path/to/recording.mp4" -l English
 Output files are automatically saved to `data/output/` by default (mirroring any subfolder structure from `data/input/`, e.g., `data/input/workshop/2/recording.mp4` outputs directly to `data/output/workshop/2/`). An explicit output directory can always be specified with `-o` or `--output-dir`.
 
 > [!TIP]
-> **Performance Boost with `-l English` (Up to 4x Faster)**:
-> Always pass the language flag (e.g., `-l English` or `-l en`). Bypassing the language auto-detection probing drops transcription time from **~5 minutes down to ~1 minute 15 seconds** for a 6-minute recording on Apple Silicon M4, while also eliminating accidental language switching on accents.
+> **Specifying Language (`-l English`)**:
+> Explicitly passing the language flag (e.g., `-l English` or `-l en`) prevents accidental language switching on accented speech, regional dialects, or background noise, ensuring consistent recognition.
 
 ### Common examples
 
 ```bash
-# Full interview with speaker labels and English language acceleration
+# Full interview with speaker labels and explicit language
 uv run transcribe "interview.mp4" --diarize -l English
 
 # Test with the first 30 seconds
@@ -129,14 +129,13 @@ For an input file `interview.mp4`, the following files are generated:
 ### Sample output (.txt)
 
 ```
-[00:00:02.870 - 00:00:04.410] SPEAKER_00: Good evening, ladies and gentlemen.
+SPEAKER_00: Good evening, ladies and gentlemen.
 
-[00:00:05.390 - 00:00:26.950] SPEAKER_01: It is my privilege to introduce to you
-Emeritus Professor of Physics, Emeritus Dean of Engineering...
+SPEAKER_01: It is my privilege to introduce to you Emeritus Professor of Physics, Emeritus Dean of Engineering...
 ```
 
 > [!TIP]
-> Pass `--cleanup-audio` to automatically delete the intermediate `.extracted.wav` file.
+> Plain `.txt` formats clean speaker turns without timestamps by default. Pass `--timestamps-in-txt` if timestamps are needed in `.txt`.
 
 ---
 
@@ -161,9 +160,8 @@ Recording  →  FFmpeg (audio extraction)
 
 Hardware acceleration is automatic: NVIDIA GPU (CUDA), Apple Silicon (Metal/MPS), or CPU fallback.
 
-### Running Speed & Performance
-- **Speed**: Transcribes at **~4x to 5x faster than real-time** when the language flag is specified (e.g. a 6-minute interview transcribes in **~1m 15s** on Apple Silicon M4).
-- **Clean Single-Line Progress**: A single unified progress bar tracks all 5 pipeline stages and chunk progress in real time with an active countdown timer (ETA).
+### Progress Tracking
+A single unified progress bar tracks all 5 pipeline stages and chunk progress in real time with an accurate elapsed timer.
 
 ---
 

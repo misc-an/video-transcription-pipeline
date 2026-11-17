@@ -17,7 +17,6 @@ from rich.progress import (
     TaskProgressColumn,
     TextColumn,
     TimeElapsedColumn,
-    TimeRemainingColumn,
 )
 from rich.table import Table
 
@@ -255,16 +254,15 @@ def run_pipeline(
     import huggingface_hub
     huggingface_hub.utils.disable_progress_bars()
 
-    # Single sleek, animated progress bar (pinned to 1 line, never duplicates)
+    # Single sleek, animated progress bar tracking pipeline stages and elapsed time
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[bold cyan]{task.description}"),
         BarColumn(bar_width=28, complete_style="green", finished_style="bold green"),
         TaskProgressColumn(),
         TextColumn("[dim]•[/dim]"),
+        TextColumn("[dim]Elapsed:[/dim]"),
         TimeElapsedColumn(),
-        TextColumn("[dim]•[/dim]"),
-        TimeRemainingColumn(),
         console=console,
     )
 
