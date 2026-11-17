@@ -16,6 +16,7 @@ from video_transcription.pipeline import (
     determine_output_dir,
     group_words_into_segments,
     smart_join_tokens,
+    smooth_speaker_assignments,
 )
 
 
@@ -66,6 +67,56 @@ def test_assign_speakers_to_words():
     assert assigned[1]["speaker"] == "SPEAKER_00"
     assert assigned[2]["speaker"] == "SPEAKER_01"
     assert assigned[3]["speaker"] == "SPEAKER_01"
+
+
+def test_assign_speakers_filters_micro_turns():
+    """Verify acoustic noise spikes shorter than 0.2s are filtered out."""
+    words = [
+        {"text": "Welcome", "start": 0.1, "end": 0.5, "speaker": None},
+        {"text": "everyone", "start": 0.6, "end": 1.0, "speaker": None},
+    ]
+    turns = [
+        (0.2, 0.3, "SPEAKER_NOISE"),  # 0.1s turn should be filtered
+        (0.0, 1.5, "SPEAKER_00"),
+    ]
+    assigned = assign_speakers_to_words(words, turns)
+    assert assigned[0]["speaker"] == "SPEAKER_00"
+    assert assigned[1]["speaker"] == "SPEAKER_00"
+
+
+def test_smooth_speaker_assignments_surrounded_blip():
+    """Verify isolated 1- and 2-word speaker blips are smoothed to surrounding speaker."""
+    words = [
+        {"text": "I", "start": 0.0, "end": 0.2, "speaker": "SPEAKER_00"},
+        {"text": "think", "start": 0.25, "end": 0.5, "speaker": "SPEAKER_01"},  # 1-word blip
+        {"text": "that", "start": 0.55, "end": 0.8, "speaker": "SPEAKER_00"},
+        {"text": "is", "start": 0.85, "end": 1.0, "speaker": "SPEAKER_00"},
+        {"text": "very", "start": 1.05, "end": 1.25, "speaker": "SPEAKER_02"},  # 2-word blip
+        {"text": "good", "start": 1.30, "end": 1.50, "speaker": "SPEAKER_02"},
+        {"text": "indeed", "start": 1.55, "end": 1.80, "speaker": "SPEAKER_00"},
+    ]
+    smoothed = smooth_speaker_assignments(words)
+    speakers = [w["speaker"] for w in smoothed]
+    assert speakers == ["SPEAKER_00"] * 7
+
+
+def test_smooth_speaker_assignments_boundary_merge():
+    """Verify 1-2 word boundary flip is merged into continuous long utterance."""
+    words = [
+        {"text": "okay", "start": 0.0, "end": 0.4, "speaker": "SPEAKER_01"},
+        # 1.0s pause between turns
+        {"text": "so", "start": 1.4, "end": 1.6, "speaker": "SPEAKER_00"},
+        {"text": "I'd", "start": 1.65, "end": 1.85, "speaker": "SPEAKER_00"},
+        # Continuous speech into SPEAKER_02 without pause (< 0.4s)
+        {"text": "like", "start": 1.90, "end": 2.1, "speaker": "SPEAKER_02"},
+        {"text": "to", "start": 2.15, "end": 2.3, "speaker": "SPEAKER_02"},
+        {"text": "thank", "start": 2.35, "end": 2.6, "speaker": "SPEAKER_02"},
+        {"text": "you", "start": 2.65, "end": 2.8, "speaker": "SPEAKER_02"},
+    ]
+    smoothed = smooth_speaker_assignments(words)
+    assert smoothed[0]["speaker"] == "SPEAKER_01"
+    # 'so I'd' merged into SPEAKER_02
+    assert [w["speaker"] for w in smoothed[1:]] == ["SPEAKER_02"] * 6
 
 
 def test_group_words_into_segments():

@@ -3,6 +3,7 @@
 from video_transcription.backends.whispercpp_backend import (
     find_whisper_cli,
     normalize_whispercpp_output,
+    recombine_bpe_tokens_into_words,
 )
 
 
@@ -101,3 +102,49 @@ def test_find_whisper_cli():
     """Verify find_whisper_cli discovers the installed binary."""
     binary = find_whisper_cli()
     assert "whisper" in binary
+
+
+def test_recombine_bpe_tokens_into_words_subwords():
+    """Verify BPE subwords and contractions are recombined into complete words."""
+    tokens = [
+        {"text": "[_BEG_]", "offsets": {"from": 0, "to": 0}},
+        {"text": " so", "offsets": {"from": 100, "to": 300}},
+        {"text": " I", "offsets": {"from": 350, "to": 450}},
+        {"text": "'d", "offsets": {"from": 450, "to": 600}},
+        {"text": " gener", "offsets": {"from": 700, "to": 900}},
+        {"text": "ative", "offsets": {"from": 900, "to": 1200}},
+        {"text": " shouldn", "offsets": {"from": 1300, "to": 1600}},
+        {"text": "'t", "offsets": {"from": 1600, "to": 1800}},
+        {"text": " .", "offsets": {"from": 1800, "to": 1900}},
+    ]
+
+    words = recombine_bpe_tokens_into_words(tokens)
+
+    assert len(words) == 4
+    assert words[0]["text"] == "so"
+    assert words[0]["start"] == 0.1
+    assert words[0]["end"] == 0.3
+
+    assert words[1]["text"] == "I'd"
+    assert words[1]["start"] == 0.35
+    assert words[1]["end"] == 0.6
+
+    assert words[2]["text"] == "generative"
+    assert words[2]["start"] == 0.7
+    assert words[2]["end"] == 1.2
+
+    assert words[3]["text"] == "shouldn't."
+    assert words[3]["start"] == 1.3
+    assert words[3]["end"] == 1.9
+
+
+def test_recombine_bpe_tokens_cjk():
+    """Verify CJK characters are preserved as independent words."""
+    tokens = [
+        {"text": "你好", "offsets": {"from": 0, "to": 500}},
+        {"text": "世界", "offsets": {"from": 500, "to": 1000}},
+    ]
+    words = recombine_bpe_tokens_into_words(tokens)
+    assert len(words) == 2
+    assert words[0]["text"] == "你好"
+    assert words[1]["text"] == "世界"

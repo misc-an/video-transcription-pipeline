@@ -12,6 +12,18 @@ from typing import Any, Dict, List, Optional
 from rich.progress import Progress, TaskID
 
 
+def is_cjk_char(char: str) -> bool:
+    """Check if character is within Chinese/Japanese/Korean unicode ranges."""
+    code = ord(char)
+    return (
+        0x4E00 <= code <= 0x9FFF
+        or 0x3400 <= code <= 0x4DBF
+        or 0x3040 <= code <= 0x309F
+        or 0x30A0 <= code <= 0x30FF
+        or 0xAC00 <= code <= 0xD7AF
+    )
+
+
 def find_whisper_cli() -> str:
     """Locate whisper-cli binary on the system."""
     binary = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
@@ -62,6 +74,53 @@ def resolve_whispercpp_model(model_name_or_path: str) -> str:
     return model_path
 
 
+def recombine_bpe_tokens_into_words(tokens: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Recombine raw BPE subword tokens into intact full words with timestamps.
+
+    In whisper.cpp BPE tokenization:
+    - Tokens starting with a space (e.g. ' gener') represent the start of a new word.
+    - Continuation subwords (e.g. 'ative'), contractions (e.g. \"'d\", \"'t\"), and
+      punctuation (e.g. \",\", \".\") attach to the previous word.
+    """
+    words: List[Dict[str, Any]] = []
+
+    contractions = {"'d", "'s", "'t", "'m", "'re", "'ve", "'ll", "n't"}
+    trailing_punct = {".", ",", "!", "?", ";", ":", "%", ")", "]", "}", "、", "。", "！", "？", "，"}
+
+    for tok in tokens:
+        raw_text = tok.get("text", "")
+        # Skip special tokens e.g. [_BEG_], [_TT_123], [BLANK_AUDIO]
+        if raw_text.startswith("[_") and raw_text.endswith("]"):
+            continue
+
+        clean_text = raw_text.strip()
+        if not clean_text:
+            continue
+
+        t_offsets = tok.get("offsets", {})
+        t_start = round(t_offsets.get("from", 0) / 1000.0, 3)
+        t_end = round(t_offsets.get("to", 0) / 1000.0, 3)
+
+        has_leading_space = raw_text.startswith(" ")
+        starts_cjk = is_cjk_char(clean_text[0])
+        is_contraction = clean_text.lower() in contractions or (clean_text.startswith("'") and len(clean_text) <= 3)
+        is_punct = clean_text in trailing_punct
+
+        if words and (is_contraction or is_punct or (not has_leading_space and not starts_cjk)):
+            # Recombine continuation subword, contraction, or punctuation into previous word
+            words[-1]["text"] += clean_text
+            words[-1]["end"] = max(words[-1]["end"], t_end)
+        else:
+            words.append({
+                "text": clean_text,
+                "start": t_start,
+                "end": t_end,
+                "speaker": None,
+            })
+
+    return words
+
+
 def normalize_whispercpp_output(raw_json: Dict[str, Any]) -> Dict[str, Any]:
     """Convert whisper.cpp full JSON output to the common pipeline dict format."""
     detected_lang = raw_json.get("result", {}).get("language", "unknown")
@@ -76,30 +135,9 @@ def normalize_whispercpp_output(raw_json: Dict[str, Any]) -> Dict[str, Any]:
         end_sec = round(offsets.get("to", 0) / 1000.0, 3)
         seg_text = seg.get("text", "").strip()
 
-        words: List[Dict[str, Any]] = []
         tokens = seg.get("tokens", [])
-        for tok in tokens:
-            tok_text = tok.get("text", "")
-            # Skip special tokens e.g. [_BEG_], [_TT_123], etc.
-            if tok_text.startswith("[_") and tok_text.endswith("]"):
-                continue
-
-            clean_word = tok_text.strip()
-            if not clean_word:
-                continue
-
-            t_offsets = tok.get("offsets", {})
-            t_start = round(t_offsets.get("from", 0) / 1000.0, 3)
-            t_end = round(t_offsets.get("to", 0) / 1000.0, 3)
-
-            word_entry = {
-                "text": clean_word,
-                "start": t_start,
-                "end": t_end,
-                "speaker": None,
-            }
-            words.append(word_entry)
-            all_words.append(word_entry)
+        words = recombine_bpe_tokens_into_words(tokens)
+        all_words.extend(words)
 
         segments.append({
             "start": start_sec,
@@ -148,8 +186,9 @@ def transcribe_whispercpp(
             "--output-json-full",
             "-ojf",
             "-of", output_prefix,
-            "-np",  # No prints to stdout
-            "-fa",  # Flash attention
+            "-np",   # No prints to stdout
+            "-fa",   # Flash attention
+            "-sow",  # Split on word rather than on token
         ]
 
         if language:

@@ -61,6 +61,89 @@ def smart_join_tokens(tokens: List[str]) -> str:
     return "".join(result).strip()
 
 
+def smooth_speaker_assignments(
+    words: List[Dict[str, Any]],
+    min_words_threshold: int = 3,
+    pause_threshold: float = 0.4,
+) -> List[Dict[str, Any]]:
+    """Smooth isolated speaker turn glitches and boundary artifacts in continuous speech."""
+    if len(words) < 3:
+        return words
+
+    # Pass 1a: Remove isolated 1-word speaker blips surrounded by the same speaker
+    for i in range(1, len(words) - 1):
+        prev_w = words[i - 1]
+        curr_w = words[i]
+        next_w = words[i + 1]
+
+        if (
+            prev_w.get("speaker")
+            and prev_w["speaker"] == next_w.get("speaker")
+            and curr_w.get("speaker") != prev_w["speaker"]
+        ):
+            pause1 = float(curr_w["start"]) - float(prev_w["end"])
+            pause2 = float(next_w["start"]) - float(curr_w["end"])
+            if pause1 < pause_threshold and pause2 < pause_threshold:
+                curr_w["speaker"] = prev_w["speaker"]
+
+    # Pass 1b: Remove isolated 2-word speaker blips surrounded by the same speaker
+    for i in range(1, len(words) - 2):
+        prev_w = words[i - 1]
+        w1 = words[i]
+        w2 = words[i + 1]
+        next_w = words[i + 2]
+
+        if (
+            prev_w.get("speaker")
+            and prev_w["speaker"] == next_w.get("speaker")
+            and w1.get("speaker") != prev_w["speaker"]
+            and w2.get("speaker") != prev_w["speaker"]
+        ):
+            pause1 = float(w1["start"]) - float(prev_w["end"])
+            pause2 = float(w2["start"]) - float(w1["end"])
+            pause3 = float(next_w["start"]) - float(w2["end"])
+            if pause1 < pause_threshold and pause2 < pause_threshold and pause3 < pause_threshold:
+                w1["speaker"] = prev_w["speaker"]
+                w2["speaker"] = prev_w["speaker"]
+
+    # Pass 2: Boundary smoothing for 1-2 word blips adjacent to a long continuous run without a pause
+    runs: List[Tuple[int, int, Optional[str]]] = []
+    i = 0
+    while i < len(words):
+        spk = words[i].get("speaker")
+        start_idx = i
+        while i < len(words) and words[i].get("speaker") == spk:
+            i += 1
+        runs.append((start_idx, i, spk))
+
+    for r_idx in range(len(runs)):
+        start_idx, end_idx, spk = runs[r_idx]
+        run_len = end_idx - start_idx
+
+        if run_len < min_words_threshold:
+            # Check merge forward into next run if next run is long and there is no pause
+            if r_idx + 1 < len(runs):
+                next_start, next_end, next_spk = runs[r_idx + 1]
+                next_len = next_end - next_start
+                pause_after = float(words[next_start]["start"]) - float(words[end_idx - 1]["end"])
+                if pause_after < pause_threshold and next_len >= min_words_threshold and next_spk is not None:
+                    for j in range(start_idx, end_idx):
+                        words[j]["speaker"] = next_spk
+                    continue
+
+            # Check merge backward into previous run if previous run was long and there is no pause
+            if r_idx - 1 >= 0:
+                prev_start, prev_end, prev_spk = runs[r_idx - 1]
+                prev_len = prev_end - prev_start
+                pause_before = float(words[start_idx]["start"]) - float(words[prev_end - 1]["end"])
+                prev_ends_sentence = words[prev_end - 1]["text"][-1:] in ".?!"
+                if pause_before < pause_threshold and not prev_ends_sentence and prev_len >= min_words_threshold and prev_spk is not None:
+                    for j in range(start_idx, end_idx):
+                        words[j]["speaker"] = prev_spk
+
+    return words
+
+
 def assign_speakers_to_words(
     words: List[Dict[str, Any]],
     speaker_turns: List[Tuple[float, float, str]],
@@ -68,6 +151,9 @@ def assign_speakers_to_words(
     """Assign speaker labels to words based on maximum temporal overlap with diarization intervals."""
     if not speaker_turns:
         return words
+
+    # Filter out micro-turns (< 0.2s) that are acoustic noise or echo artifacts
+    valid_turns = [t for t in speaker_turns if (t[1] - t[0]) >= 0.2] or speaker_turns
 
     for w in words:
         w_start = float(w["start"])
@@ -79,7 +165,7 @@ def assign_speakers_to_words(
 
         w_mid = (w_start + w_end) / 2.0
 
-        for t_start, t_end, speaker in speaker_turns:
+        for t_start, t_end, speaker in valid_turns:
             overlap = max(0.0, min(w_end, t_end) - max(w_start, t_start))
             if overlap > best_overlap:
                 best_overlap = overlap
@@ -92,7 +178,7 @@ def assign_speakers_to_words(
 
         w["speaker"] = best_speaker if best_speaker is not None else closest_speaker
 
-    return words
+    return smooth_speaker_assignments(words)
 
 
 def group_words_into_segments(
